@@ -1,0 +1,516 @@
+from enum import Enum
+import gmsh
+import numpy as np
+from numpy.typing import NDArray
+from mpi4py import MPI
+from petsc4py import PETSc
+import time
+import typing
+
+import dolfinx
+from dolfinx.io import gmshio
+import dolfinx.fem as dfem
+import dolfinx.mesh as dmesh
+import ufl
+
+from dolfinx_eqlb.eqlb import fluxbc, FluxEqlbEV, FluxEqlbSE
+from dolfinx_eqlb.lsolver import local_projection
+from dolfinx_eqlb.eqlb.check_eqlb_conditions import (
+    check_divergence_condition,
+    check_jump_condition,
+)
+
+
+# --- The exact solution
+class ExactSolution:
+    """The exact solution following [1]:
+
+    uext = r(x)^gamma * psi(sigma, x)
+
+    [1] Kellogg, R. B., https://doi.org/10.1080/00036817408839086, 1975
+    """
+
+    def __init__(self, gamma: float, sigma: float, ratio_k: float) -> None:
+        """Constructor
+
+        Args:
+            gamma: The parameter gamma
+            sigma: The parameter sigma
+        """
+        # The solution parameters
+        self.gamma = gamma
+        self.sigma = sigma
+        self.ratio_k = ratio_k
+
+        # The exact solution within the 4 quadrants
+        def uext_q1(x, gamma, sigma):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            theta = np.arctan2(x[1], x[0])
+
+            # Auxiliaries
+            h1 = np.cos((0.5 * np.pi - sigma) * gamma)
+
+            return (r**gamma) * h1 * np.cos((theta - 0.25 * np.pi) * gamma)
+
+        def uext_q2(x, gamma, sigma):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            theta = theta = np.arctan2(x[1], x[0])
+
+            # Auxiliaries
+            h1 = np.cos(0.25 * np.pi * gamma)
+
+            return (r**gamma) * h1 * np.cos((theta - np.pi + sigma) * gamma)
+
+        def uext_q3(x, gamma, sigma):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            # theta = np.arctan2(x[1], x[0])
+            theta = np.pi + np.arctan(x[1] / x[0])
+
+            # Auxiliaries
+            h1 = np.cos(sigma * gamma)
+
+            return (r**gamma) * h1 * np.cos((theta - 1.25 * np.pi) * gamma)
+
+        def uext_q4(x, gamma, sigma):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            theta = 2 * np.pi + np.arctan2(x[1], x[0])
+
+            # Auxiliaries
+            h1 = np.cos((0.25 * np.pi) * gamma)
+
+            return (r**gamma) * h1 * np.cos((theta - 1.5 * np.pi - sigma) * gamma)
+
+        self.list_uext = []
+        self.list_uext.append(lambda x: uext_q1(x, self.gamma, self.sigma))
+        self.list_uext.append(lambda x: uext_q2(x, self.gamma, self.sigma))
+        self.list_uext.append(lambda x: uext_q3(x, self.gamma, self.sigma))
+        self.list_uext.append(lambda x: uext_q4(x, self.gamma, self.sigma))
+
+    def interpolate_to_function(
+        self,
+        f: dfem.Function,
+        quadrants: typing.List[NDArray],
+    ):
+        """Interpolates the exact solution into a function
+
+        Args:
+            f:         The finite-element function
+            quadrants: The cells within each quadrant of the squared domain
+        """
+
+        # Interpolate the exact solution
+        for quadrant, uext in zip(quadrants, self.list_uext):
+            f.interpolate(uext, cells=quadrant)
+
+
+# --- Mesh generation
+class AdaptiveSquare:
+    """An adaptive squared domain
+    Create an initial mesh based on a crossed mesh topology and
+    refines the mesh based on a the Doerfler strategy.
+    """
+
+    def __init__(self, nelmt: int):
+        """Constructor
+
+        Args:
+            nelmt: The number of elements in x and y direction
+        """
+
+        # --- Initialise storage
+        # The mesh counter
+        self.refinement_level = 0
+
+        # --- Create the initial mesh
+        # The mesh
+        self.mesh = dmesh.create_rectangle(
+            MPI.COMM_WORLD,
+            [np.array([-1, -1]), np.array([1, 1])],
+            [nelmt, nelmt],
+            cell_type=dmesh.CellType.triangle,
+            diagonal=dmesh.DiagonalType.crossed,
+        )
+
+        # The boundary markers
+        self.boundary_markers = [
+            (1, lambda x: np.isclose(x[0], -1)),
+            (2, lambda x: np.isclose(x[1], -1)),
+            (3, lambda x: np.isclose(x[0], 1)),
+            (4, lambda x: np.isclose(x[1], 1)),
+        ]
+
+        # Set facet function and facet integrator
+        self.facet_functions = None
+        self.ds = None
+
+        self.mark_boundary()
+
+    # --- Generate the mesh ---
+    def mark_boundary(self):
+        """Marks the boundary based on the initially defined boundary markers"""
+
+        facet_indices, facet_markers = [], []
+
+        for marker, locator in self.boundary_markers:
+            facets = dmesh.locate_entities(self.mesh, 1, locator)
+            facet_indices.append(facets)
+            facet_markers.append(np.full(len(facets), marker))
+
+        facet_indices = np.array(np.hstack(facet_indices), dtype=np.int32)
+        facet_markers = np.array(np.hstack(facet_markers), dtype=np.int32)
+        sorted_facets = np.argsort(facet_indices)
+        self.facet_functions = dmesh.meshtags(
+            self.mesh, 1, facet_indices[sorted_facets], facet_markers[sorted_facets]
+        )
+        self.ds = ufl.Measure(
+            "ds", domain=self.mesh, subdomain_data=self.facet_functions
+        )
+
+    def refine(
+        self,
+        doerfler: float,
+        eta_h: typing.Optional[dfem.Function] = None,
+        outname: typing.Optional[str] = None,
+    ):
+        """Refine the mesh based on Doerflers marking strategy
+
+        Args:
+            doerfler: The Doerfler parameter
+            eta_h:    The function of the cells error estimate
+            outname:  The name of the output file for the mesh
+                      (no output when not specified)
+        """
+        # The number of current mesh cells
+        ncells = self.mesh.topology.index_map(2).size_global
+
+        # The total error (squared!)
+        eta_total = np.sum(eta_h.array)
+
+        # Export marker to ParaView
+        if outname is not None:
+            V_out = dfem.FunctionSpace(self.mesh, ("DG", 0))
+            eta_h_out = dfem.Function(V_out)
+            eta_h_out.name = "eta_h"
+            eta_h_out.x.array[:] = eta_h.array[:]
+
+            outfile = dolfinx.io.XDMFFile(
+                MPI.COMM_WORLD,
+                outname + "-mesh" + str(self.refinement_level) + "_error.xdmf",
+                "w",
+            )
+            outfile.write_mesh(self.mesh)
+            outfile.write_function(eta_h_out, 0)
+            outfile.close()
+
+        # Refine the mesh
+        if np.isclose(doerfler, 1.0):
+            refined_mesh = dmesh.refine(self.mesh)
+        else:
+            # Check input
+            if eta_h is None:
+                raise ValueError("Error marker required for adaptive refinement")
+
+            # Cut-off
+            cutoff = doerfler * eta_total
+
+            # Sort cell contributions
+            sorted_cells = np.argsort(eta_h.array)[::-1]
+
+            # Create list of refined cells
+            rolling_sum = 0.0
+            breakpoint = ncells
+
+            for i, e in enumerate(eta_h.array[sorted_cells]):
+                rolling_sum += e
+                if rolling_sum > cutoff:
+                    breakpoint = i
+                    break
+
+            # List of refined cells
+            refine_cells = np.array(
+                np.sort(sorted_cells[0 : breakpoint + 1]), dtype=np.int32
+            )
+
+            # Refine mesh
+            edges = dmesh.compute_incident_entities(self.mesh, refine_cells, 2, 1)
+            refined_mesh = dmesh.refine(self.mesh, edges)
+
+        # Update the mesh
+        self.mesh = refined_mesh
+        self.mark_boundary()
+
+        # Update counter
+        self.refinement_level += 1
+
+        # Print infos
+        print(
+            "Refinement {} - Total error: {} - ncells: {}".format(
+                self.refinement_level,
+                eta_total,
+                self.mesh.topology.index_map(2).size_global,
+            )
+        )
+
+    # --- The 4 mesh quadrants ---
+    def quadrants_to_cellgroups(self) -> typing.List[NDArray]:
+        """Get the cells within each quadrant of a squared domain
+
+        Returns:
+            The cell groups of the 4 quadrants
+        """
+
+        # The identifiers
+        quadrants = []
+        quadrants.append(lambda x: np.logical_and(x[0] >= 0, x[1] >= 0))
+        quadrants.append(lambda x: np.logical_and(x[0] <= 0, x[1] >= 0))
+        quadrants.append(lambda x: np.logical_and(x[0] <= 0, x[1] <= 0))
+        quadrants.append(lambda x: np.logical_and(x[0] >= 0, x[1] <= 0))
+
+        # Set the cell_groups
+        cellgroups = []
+
+        for quadrant in quadrants:
+            cellgroups.append(
+                dmesh.locate_entities(self.mesh, self.mesh.topology.dim, quadrant)
+            )
+
+        return cellgroups
+
+
+# --- The primal problem
+def solve(
+    domain: AdaptiveSquare, uext: ExactSolution, degree: int
+) -> typing.Tuple[dfem.Function, typing.Any]:
+    """Solves the Poisson problem based on lagrangian finite elements
+
+    Args:
+        domain:      The domain
+        uext:        The exact solution
+        order_prime: The order of the FE space
+
+    Returns:
+        The approximate solution,
+        The diffusion coefficient
+    """
+
+    # The subdomains of the mesh
+    quadrants = domain.quadrants_to_cellgroups()
+
+    # Set function space (primal problem)
+    V_prime = dfem.FunctionSpace(domain.mesh, ("CG", degree))
+    V_k = dfem.FunctionSpace(domain.mesh, ("DG", 0))
+
+    uh = dfem.Function(V_prime)
+
+    # Set trial and test functions
+    u = ufl.TrialFunction(V_prime)
+    v = ufl.TestFunction(V_prime)
+
+    # The diffusion coefficient
+    k = dfem.Function(V_k)
+    k.x.array[:] = 1.0
+    k.x.array[quadrants[0]] = uext.ratio_k
+    k.x.array[quadrants[2]] = uext.ratio_k
+
+    # Equation system
+    a = dfem.form(ufl.inner(k * ufl.grad(u), ufl.grad(v)) * ufl.dx)
+    l = dfem.form(dfem.Constant(domain.mesh, PETSc.ScalarType(0)) * v * ufl.dx)
+
+    # Dirichlet boundary conditions
+    uD = dfem.Function(V_prime)
+    uext.interpolate_to_function(uD, quadrants)
+
+    dofs = dfem.locate_dofs_topological(V_prime, 1, domain.facet_functions.indices)
+    bc_essnt = [dfem.dirichletbc(uD, dofs)]
+
+    # Solve primal problem
+    timing = 0
+
+    timing -= time.perf_counter()
+    A = dfem.petsc.assemble_matrix(a, bcs=bc_essnt)
+    A.assemble()
+
+    L = dfem.petsc.create_vector(l)
+    dfem.petsc.assemble_vector(L, l)
+    dfem.apply_lifting(L, [a], [bc_essnt])
+    L.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+    dfem.set_bc(L, bc_essnt)
+
+    solver = PETSc.KSP().create(MPI.COMM_WORLD)
+    solver.setOperators(A)
+    solver.setType(PETSc.KSP.Type.CG)
+    pc = solver.getPC()
+    pc.setType(PETSc.PC.Type.HYPRE)
+    pc.setHYPREType("boomeramg")
+
+    solver.solve(L, uh.vector)
+    timing += time.perf_counter()
+
+    outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "TestKellogg.xdmf", "w")
+
+    uD.name = "uext"
+    uh.name = "uh"
+
+    outfile.write_mesh(domain.mesh)
+    outfile.write_function(uD, 0)
+    outfile.write_function(uh, 0)
+    outfile.close()
+
+    print(f"Primal problem solved in {timing:.4e} s")
+
+    return uh, k
+
+
+# --- The flux equilibration
+def equilibrate_flux(
+    domain: AdaptiveSquare,
+    sigma_h: typing.Any,
+    degree: int,
+    check_equilibration: typing.Optional[bool] = True,
+) -> typing.Tuple[dfem.Function, dfem.Function]:
+    """Equilibrate the flux
+
+    The RHS is assumed to be the divergence of the exact
+    flux (manufactured solution).
+
+    Args:
+        domain:              The domain
+        sigma_h:             The flux calculated from the primal solution uh
+        degree:              The order of RT elements used for equilibration
+        check_equilibration: Id if equilibration conditions are checked
+
+    Returns:
+        The projected flux,
+        The equilibrated flux
+    """
+
+    # Project flux and RHS into required DG space
+    V_rhs_proj = dfem.FunctionSpace(domain.mesh, ("DG", degree - 1))
+    V_flux_proj = dfem.VectorFunctionSpace(domain.mesh, ("DG", degree - 1))
+
+    sigma_proj = local_projection(V_flux_proj, [sigma_h])
+    rhs_proj = [dfem.Function(V_rhs_proj)]
+
+    # Initialise equilibrator
+    equilibrator = FluxEqlbSE(degree, domain.mesh, rhs_proj, sigma_proj)
+
+    # Set BCs
+    equilibrator.set_boundary_conditions([domain.facet_functions.indices], [[]])
+
+    # Solve equilibration
+    timing = 0
+
+    timing -= time.perf_counter()
+    equilibrator.equilibrate_fluxes()
+    timing += time.perf_counter()
+
+    print(f"Equilibration solved in {timing:.4e} s")
+
+    # --- Check equilibration conditions ---
+    if check_equilibration:
+        # Check if reconstruction is in DRT
+        flux_is_dg = equilibrator.V_flux.element.basix_element.discontinuous
+
+        # Divergence condition
+        div_condition_fulfilled = check_divergence_condition(
+            equilibrator.list_flux[0],
+            sigma_proj[0],
+            rhs_proj[0],
+        )
+
+        if not div_condition_fulfilled:
+            raise ValueError("Divergence conditions not fulfilled")
+
+        # The jump condition
+        if flux_is_dg:
+            jump_condition_fulfilled = check_jump_condition(
+                equilibrator.list_flux[0], sigma_proj[0]
+            )
+
+            if not jump_condition_fulfilled:
+                raise ValueError("Jump conditions not fulfilled")
+
+    return sigma_proj[0], equilibrator.list_flux[0]
+
+
+# --- Estimate the error
+def estimate_error(
+    delta_sigmaR: typing.Union[dfem.Function, typing.Any],
+) -> typing.Tuple[dfem.Function, float]:
+    """Estimates the error of a Poisson problem
+
+    The estimate is calculated based on [1]. For the given problem the
+    error due to data oscitation is zero.
+
+    [1] Ciarlet, P. and Vohralík, M., https://doi.org/10.1051/m2an/2018034, 2018
+
+    Args:
+        delta_sigmaR: The difference of equilibrated and projected flux
+
+    Returns:
+        The cell-local error estimates,
+        The total error estimate
+    """
+
+    # Extract mesh
+    domain = uh.function_space.mesh
+
+    # Initialize storage of error
+    V_e = dfem.FunctionSpace(domain, ufl.FiniteElement("DG", domain.ufl_cell(), 0))
+    v = ufl.TestFunction(V_e)
+
+    # Extract cell diameter
+    form_eta = dfem.form(ufl.dot(delta_sigmaR, delta_sigmaR) * v * ufl.dx)
+
+    # Assemble errors
+    L_eta = dfem.petsc.create_vector(
+        dfem.form(ufl.dot(delta_sigmaR, delta_sigmaR) * v * ufl.dx)
+    )
+
+    dfem.petsc.assemble_vector(L_eta, form_eta)
+
+    return L_eta
+
+
+if __name__ == "__main__":
+    # --- Parameters ---
+    # The orders of the FE spaces
+    order_prime = 1
+    order_eqlb = 1
+
+    # Adaptive algorithm
+    nref = 7
+    doerfler = 0.5
+
+    # --- Execute adaptive calculation ---
+    # The exact solution
+    uext = ExactSolution(0.1, -14.92256510455152, 161.4476387975881)
+
+    # The domain
+    domain = AdaptiveSquare(2)
+
+    for n in range(0, nref):
+        # Solve primal problem
+        uh, k = solve(domain, uext, order_prime)
+
+        # Equilibrate the flux
+        delta_sigma, _ = equilibrate_flux(domain, -k * ufl.grad(uh), order_eqlb, False)
+
+        # Compute error estimate
+        eta_h = estimate_error(delta_sigma)
+
+        # Refine mesh
+        domain.refine(doerfler, eta_h, outname="AdaptiveKellogg")
+        print(uh.function_space.dofmap.index_map.size_global)
