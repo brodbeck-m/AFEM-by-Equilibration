@@ -258,7 +258,7 @@ class AdaptiveSquare:
         print(
             "Refinement {} - Total error: {} - ncells: {}".format(
                 self.refinement_level,
-                eta_total,
+                np.sqrt(eta_total),
                 self.mesh.topology.index_map(2).size_global,
             )
         )
@@ -355,18 +355,10 @@ def solve(
     pc.setType(PETSc.PC.Type.HYPRE)
     pc.setHYPREType("boomeramg")
 
+    solver.setTolerances(rtol=1e-10, atol=1e-12, max_it=1000)
+
     solver.solve(L, uh.vector)
     timing += time.perf_counter()
-
-    outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "TestKellogg.xdmf", "w")
-
-    uD.name = "uext"
-    uh.name = "uh"
-
-    outfile.write_mesh(domain.mesh)
-    outfile.write_function(uD, 0)
-    outfile.write_function(uh, 0)
-    outfile.close()
 
     print(f"Primal problem solved in {timing:.4e} s")
 
@@ -379,7 +371,7 @@ def equilibrate_flux(
     sigma_h: typing.Any,
     degree: int,
     check_equilibration: typing.Optional[bool] = True,
-) -> typing.Tuple[dfem.Function, dfem.Function]:
+) -> dfem.Function:
     """Equilibrate the flux
 
     The RHS is assumed to be the divergence of the exact
@@ -442,19 +434,19 @@ def equilibrate_flux(
             if not jump_condition_fulfilled:
                 raise ValueError("Jump conditions not fulfilled")
 
-    return sigma_proj[0], equilibrator.list_flux[0]
+    return equilibrator.list_flux[0]
 
 
 # --- Estimate the error
 def estimate_error(
+    domain: AdaptiveSquare,
     delta_sigmaR: typing.Union[dfem.Function, typing.Any],
+    k: dfem.Function,
 ) -> typing.Tuple[dfem.Function, float]:
     """Estimates the error of a Poisson problem
 
-    The estimate is calculated based on [1]. For the given problem the
+    The estimate is calculated based on [???]. For the given problem the
     error due to data oscitation is zero.
-
-    [1] Ciarlet, P. and Vohralík, M., https://doi.org/10.1051/m2an/2018034, 2018
 
     Args:
         delta_sigmaR: The difference of equilibrated and projected flux
@@ -464,34 +456,68 @@ def estimate_error(
         The total error estimate
     """
 
-    # Extract mesh
-    domain = uh.function_space.mesh
-
     # Initialize storage of error
-    V_e = dfem.FunctionSpace(domain, ufl.FiniteElement("DG", domain.ufl_cell(), 0))
+    V_e = dfem.FunctionSpace(
+        domain.mesh, ufl.FiniteElement("DG", domain.mesh.ufl_cell(), 0)
+    )
     v = ufl.TestFunction(V_e)
 
     # Extract cell diameter
-    form_eta = dfem.form(ufl.dot(delta_sigmaR, delta_sigmaR) * v * ufl.dx)
+    form_eta = dfem.form((1 / k) * ufl.dot(delta_sigmaR, delta_sigmaR) * v * ufl.dx)
 
     # Assemble errors
-    L_eta = dfem.petsc.create_vector(
-        dfem.form(ufl.dot(delta_sigmaR, delta_sigmaR) * v * ufl.dx)
-    )
+    L_eta = dfem.petsc.create_vector(form_eta)
 
     dfem.petsc.assemble_vector(L_eta, form_eta)
 
-    return L_eta
+    return L_eta, np.sqrt(np.sum(L_eta.array))
+
+
+# --- Post processing
+def post_processing(
+    domain: AdaptiveSquare,
+    k: dfem.Function,
+    uext: ExactSolution,
+    uh: dfem.Function,
+    eta_h_tot: float,
+    results: NDArray,
+):
+    # The function space
+    degree_W = uh.function_space.element.basix_element.degree + 2
+    W = dfem.FunctionSpace(domain.mesh, ("CG", degree_W))
+
+    # Calculate err = uh - uext in W
+    uext_W = dfem.Function(W)
+    uext.interpolate_to_function(uext_W, domain.quadrants_to_cellgroups())
+
+    err_W = dfem.Function(W)
+    err_W.interpolate(uh)
+
+    err_W.x.array[:] -= uext_W.x.array[:]
+
+    # Evaluate H1 norm
+    err_h1 = np.sqrt(
+        dfem.assemble_scalar(
+            dfem.form(k * ufl.inner(ufl.grad(err_W), ufl.grad(err_W)) * ufl.dx)
+        )
+    )
+
+    # Store results
+    id = domain.refinement_level
+    results[id, 0] = domain.mesh.topology.index_map(2).size_global
+    results[id, 1] = uh.function_space.dofmap.index_map.size_global
+    results[id, 2] = err_h1
+    results[id, 4] = eta_h_tot
 
 
 if __name__ == "__main__":
     # --- Parameters ---
     # The orders of the FE spaces
-    order_prime = 1
-    order_eqlb = 1
+    order_prime = 2
+    order_eqlb = 2
 
     # Adaptive algorithm
-    nref = 7
+    nref = 30
     doerfler = 0.5
 
     # --- Execute adaptive calculation ---
@@ -501,16 +527,36 @@ if __name__ == "__main__":
     # The domain
     domain = AdaptiveSquare(2)
 
+    # Storage of results
+    results = np.zeros((nref, 7))
+
     for n in range(0, nref):
-        # Solve primal problem
+        # Solve
         uh, k = solve(domain, uext, order_prime)
 
         # Equilibrate the flux
-        delta_sigma, _ = equilibrate_flux(domain, -k * ufl.grad(uh), order_eqlb, False)
+        delta_sigmaR, _ = equilibrate_flux(domain, -k * ufl.grad(uh), order_eqlb, False)
 
-        # Compute error estimate
-        eta_h = estimate_error(delta_sigma)
+        # Mark
+        eta_h, eta_h_tot = estimate_error(domain, delta_sigmaR, k)
 
-        # Refine mesh
+        # Post processing
+        post_processing(domain, k, uext, uh, eta_h_tot, results)
+
+        # Refine
         domain.refine(doerfler, eta_h, outname="AdaptiveKellogg")
         print(uh.function_space.dofmap.index_map.size_global)
+
+    # Export results
+    results[1:, 3] = np.log(results[1:, 2] / results[:-1, 2]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[1:, 5] = np.log(results[1:, 4] / results[:-1, 4]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[:, 6] = results[:, 4] / results[:, 2]
+
+    outname = "AdaptiveKellogg_porder-{}_eorder-{}.csv".format(order_prime, order_eqlb)
+    header = "nelmt, ndofs, erruh1, rateuh1, eeuh1, rateeeuh1, ieff"
+
+    np.savetxt(outname, results, delimiter=",", header=header)

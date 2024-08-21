@@ -386,6 +386,7 @@ def equilibrate_flux(
 
 # --- Estimate the error
 def estimate_error(
+    domain: AdaptiveLShape,
     delta_sigmaR: typing.Union[dfem.Function, typing.Any],
 ) -> typing.Tuple[dfem.Function, float]:
     """Estimates the error of a Poisson problem
@@ -396,6 +397,7 @@ def estimate_error(
     [1] Ern, A. and Vohralík, M., https://doi.org/10.1051/m2an/2018034, 2015
 
     Args:
+        domain:       The domain
         delta_sigmaR: The difference of equilibrated and projected flux
 
     Returns:
@@ -403,11 +405,10 @@ def estimate_error(
         The total error estimate
     """
 
-    # Extract mesh
-    domain = uh.function_space.mesh
-
     # Initialize storage of error
-    V_e = dfem.FunctionSpace(domain, ufl.FiniteElement("DG", domain.ufl_cell(), 0))
+    V_e = dfem.FunctionSpace(
+        domain.mesh, ufl.FiniteElement("DG", domain.mesh.ufl_cell(), 0)
+    )
     v = ufl.TestFunction(V_e)
 
     # Extract cell diameter
@@ -458,8 +459,8 @@ def post_processing(
 if __name__ == "__main__":
     # --- Parameters ---
     # The orders of the FE spaces
-    order_prime = 2
-    order_eqlb = 3
+    order_prime = 1
+    order_eqlb = 1
 
     # Adaptive algorithm
     nref = 10
@@ -480,10 +481,10 @@ if __name__ == "__main__":
         delta_sigmaR = equilibrate_flux(domain, -ufl.grad(uh), order_eqlb, True)
 
         # Mark
-        eta_h, eta_tot = estimate_error(delta_sigmaR)
+        eta_h, eta_h_tot = estimate_error(domain, delta_sigmaR)
 
         # Post processing
-        post_processing(domain, uh, eta_tot, results)
+        post_processing(domain, uh, eta_h_tot, results)
 
         # Refine
         domain.refine(doerfler, eta_h, outname="AdaptiveLShape")
