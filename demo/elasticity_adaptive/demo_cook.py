@@ -298,21 +298,26 @@ class AdaptiveCMembrane:
 
 
 # --- The primal problem
+class DiscType(Enum):
+    displacement = 0
+    displacement_pressure = 1
+
+
 def solve(
     domain: AdaptiveCMembrane,
     pi_1: float,
     p_0: float,
+    sdisc_type: DiscType,
     degree: int,
-    use_up: typing.Optional[bool] = False,
 ) -> typing.Tuple[dfem.Function, int, typing.Any]:
-    """Solves the Poisson problem based on lagrangian finite elements
+    """Solver for linear elasticity based on Lagrangian finite elements
 
     Args:
         domain:      The domain
         pi_1:        The ratio of first and second Lamé parameter
         p_0:         The the traction in y direction on surface 3
+        sdisc_type:  The type of the spatial discretisation
         order_prime: The order of the FE space
-        use_up:      True, if a u-p formulation shall be applied
 
     Returns:
         The approximate solution
@@ -321,7 +326,7 @@ def solve(
     # Initialise timing
     timing = 0
 
-    if use_up:
+    if sdisc_type == DiscType.displacement_pressure:
         raise NotImplementedError("UP not implemented")
     else:
         # Set function space (primal problem)
@@ -464,23 +469,23 @@ def equilibrate_flux(
 
     print(f"Equilibration solved in {timing:.4e} s")
 
+    # Stresses as ufl tensor
+    stress_eqlb = ufl.as_matrix(
+        [
+            [-equilibrator.list_flux[0][0], -equilibrator.list_flux[0][1]],
+            [-equilibrator.list_flux[1][0], -equilibrator.list_flux[1][1]],
+        ]
+    )
+
+    stress_proj = ufl.as_matrix(
+        [
+            [-sigma_proj[0][0], -sigma_proj[0][1]],
+            [-sigma_proj[1][0], -sigma_proj[1][1]],
+        ]
+    )
+
     # --- Check equilibration conditions ---
     if check_equilibration:
-        # Stresses as ufl tensor
-        stress_eqlb = ufl.as_matrix(
-            [
-                [-equilibrator.list_flux[0][0], -equilibrator.list_flux[0][1]],
-                [-equilibrator.list_flux[1][0], -equilibrator.list_flux[1][1]],
-            ]
-        )
-
-        stress_proj = ufl.as_matrix(
-            [
-                [-sigma_proj[0][0], -sigma_proj[0][1]],
-                [-sigma_proj[1][0], -sigma_proj[1][1]],
-            ]
-        )
-
         # Check divergence condition
         rhs_proj_vecval = dfem.Function(V_flux_proj)
 
@@ -518,10 +523,10 @@ def equilibrate_flux(
 def estimate_error(
     domain: AdaptiveCMembrane,
     pi_1: float,
+    sdisc_type: DiscType,
     delta_sigmaR: typing.Any,
     korns_constants: dfem.Function,
-    use_up: typing.Optional[bool] = False,
-    eqlb_is_sym: typing.Optional[bool] = False,
+    guarantied_upper_bound: typing.Optional[bool] = False,
 ) -> typing.Tuple[dfem.Function, typing.List[float]]:
     """Estimates the error for elasticity
 
@@ -531,11 +536,12 @@ def estimate_error(
     [1] Bertrand, F. et al., https://doi.org/10.1002/num.22741, 2021
 
     Args:
-        domain:       The domain
-        pi_1:         The ratio of lambda and mu
-        delta_sigmaR: The difference of equilibrated and projected flux
-        use_up:       True, if a u-p formulation shall be applied
-        eqlb_is_sym:  True, if the equilibrated stress is assumed to be symmetric
+        domain:                 The domain
+        pi_1:                   The ratio of lambda and mu
+        sdisc_type:             The type of the spatial discretisation
+        delta_sigmaR:           The difference of equilibrated and projected flux
+        korns_constants:        The Korn's constants
+        guarantied_upper_bound: True, if a guarantied upper bound shall be calculated
 
     Returns:
         The cell-local error estimates
@@ -548,7 +554,7 @@ def estimate_error(
     )
     v = ufl.TestFunction(V_e)
 
-    if use_up:
+    if sdisc_type == DiscType.displacement_pressure:
         raise NotImplementedError("UP not implemented")
     else:
         # The error estimate
@@ -558,17 +564,17 @@ def estimate_error(
         )
         err_wsym = 0.5 * korns_constants * (delta_sigmaR[0, 1] - delta_sigmaR[1, 0])
 
-        if eqlb_is_sym:
-            eta = ufl.inner(delta_sigmaR, a_delta_sigma)
-        else:
+        if guarantied_upper_bound:
             eta = ufl.inner(delta_sigmaR, a_delta_sigma) + ufl.inner(err_wsym, err_wsym)
+        else:
+            eta = ufl.inner(delta_sigmaR, a_delta_sigma)
 
     # Assemble cell-local errors
     form_eta = dfem.form(eta * v * ufl.dx)
     L_eta = dfem.petsc.create_vector(form_eta)
     dfem.petsc.assemble_vector(L_eta, form_eta)
 
-    if use_up:
+    if sdisc_type == DiscType.displacement_pressure:
         raise NotImplementedError("UP not implemented")
     else:
         # Assemble error contributions
@@ -593,16 +599,29 @@ def estimate_error(
 def post_processing(
     domain: AdaptiveCMembrane,
     pi_1: float,
+    sdisc_type: DiscType,
     u_ext: dfem.Function,
     list_uh: typing.List[dfem.Function],
     results: NDArray,
-    use_up: typing.Optional[bool] = False,
 ):
+    """Evaluate the true discreisation errors
+    An overkill solution is assumes to the the exact solution. The error is
+    calculated based on the interpolation of u_ext and u_h into a higher order
+    Lagrange space on the reference mesh.
+
+    Args:
+        domain:     The domain
+        pi_1:       The ratio of lambda and mu
+        sdisc_type: The type of the spatial discretisation
+        u_ext:      The exact solution
+        list_uh:    The list of approximated solutions
+        results:    The storage of results
+    """
     # Prepare error evaluation
     uext_W = []
     err_W = []
 
-    if use_up:
+    if sdisc_type == DiscType.displacement_pressure:
         # The function-space W for the error
         degree = u_ext.function_space.sub(0).element.basix_element.degree + 2
         Vu_W = dfem.VectorFunctionSpace(domain.mesh, ("P", degree))
@@ -639,7 +658,7 @@ def post_processing(
             err_i.x.array[:] = 0.0
 
             # Interpolate uh into higer order space W
-            if use_up:
+            if sdisc_type == DiscType.displacement_pressure:
                 err_i.interpolate(uh.sub(i).collapse())
             else:
                 err_i.interpolate(uh)
@@ -648,7 +667,7 @@ def post_processing(
             err_i.x.array[:] -= uext_i.x.array[:]
 
         # Calculate the error
-        if use_up:
+        if sdisc_type == DiscType.displacement_pressure:
             raise NotImplementedError("UP not implemented")
         else:
             form_err = dfem.form(
@@ -672,9 +691,13 @@ if __name__ == "__main__":
     # The traction
     p_0 = 0.03
 
-    # The orders of the FE spaces
+    # The spatial discretisation
+    sdisc_type = DiscType.displacement
     order_prime = 2
+
+    # Error estimation
     order_eqlb = 3
+    guarantied_upper_bound = True
 
     # Adaptive algorithm
     nref = 15
@@ -686,19 +709,21 @@ if __name__ == "__main__":
 
     # Storage of results
     list_uh = []
-    results = np.zeros((nref, 9))
+    results = np.zeros((nref, 10))
 
     for n in range(0, nref):
         # Solve
-        u_h, ndofs, sigma_h = solve(domain, pi_1, p_0, order_prime)
+        u_h, ndofs, sigma_h = solve(domain, pi_1, p_0, sdisc_type, order_prime)
 
         # Equilibrate the flux
         delta_sigmaR, korns_constants = equilibrate_flux(
-            domain, p_0, -sigma_h, order_eqlb, True
+            domain, p_0, -sigma_h, order_eqlb, False
         )
 
         # Mark
-        eta_h, eta_h_tot = estimate_error(domain, pi_1, delta_sigmaR, korns_constants)
+        eta_h, eta_h_tot = estimate_error(
+            domain, pi_1, sdisc_type, delta_sigmaR, korns_constants
+        )
 
         # Store results
         list_uh.append(u_h)
@@ -717,10 +742,10 @@ if __name__ == "__main__":
     domain.refine(1.0)
 
     # Calculate over-kill solution
-    u_ext, ndofs, sigma_ext = solve(domain, pi_1, p_0, order_prime + 1)
+    u_ext, ndofs, sigma_ext = solve(domain, pi_1, p_0, sdisc_type, order_prime + 1)
 
     # Evaluate error
-    post_processing(domain, pi_1, u_ext, list_uh, results)
+    post_processing(domain, pi_1, sdisc_type, u_ext, list_uh, results)
 
     # Export results
     results[1:, 3] = np.log(results[1:, 2] / results[:-1, 2]) / np.log(
@@ -729,9 +754,12 @@ if __name__ == "__main__":
     results[1:, 7] = np.log(results[1:, 4] / results[:-1, 4]) / np.log(
         results[:-1, 1] / results[1:, 1]
     )
-    results[:, 8] = results[:, 4] / results[:, 2]
+    results[1:, 8] = np.log(results[1:, 5] / results[:-1, 5]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[:, 9] = results[:, 4] / results[:, 2]
 
     outname = "CooksMembrane_porder-{}_eorder-{}.csv".format(order_prime, order_eqlb)
-    header = "nelmt, ndofs, erruh1, rateuh1, eetot, eedsigR, eeasym, rateetot, ieff"
+    header = "nelmt, ndofs, erruh1, rateuh1, eetot, eedsigR, eeasym, rateetot, rateesigR, ieff"
 
     np.savetxt(outname, results, delimiter=",", header=header)
