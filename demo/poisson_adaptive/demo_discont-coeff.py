@@ -1,5 +1,4 @@
 from enum import Enum
-import gmsh
 import numpy as np
 from numpy.typing import NDArray
 from mpi4py import MPI
@@ -8,7 +7,6 @@ import time
 import typing
 
 import dolfinx
-from dolfinx.io import gmshio
 import dolfinx.fem as dfem
 import dolfinx.mesh as dmesh
 import ufl
@@ -22,7 +20,13 @@ from dolfinx_eqlb.eqlb.check_eqlb_conditions import (
 
 
 # --- The exact solution
-class ExactSolution:
+class ExtSolType(Enum):
+    riviere_5 = 0
+    riviere_100 = 1
+    kellogg_161 = 2
+
+
+class ExactSolutionKellogg:
     """The exact solution following [1]:
 
     uext = r(x)^gamma * psi(sigma, x)
@@ -30,7 +34,7 @@ class ExactSolution:
     [1] Kellogg, R. B., https://doi.org/10.1080/00036817408839086, 1975
     """
 
-    def __init__(self, gamma: float, sigma: float, ratio_k: float) -> None:
+    def __init__(self, ratio_k: float) -> None:
         """Constructor
 
         Args:
@@ -38,9 +42,13 @@ class ExactSolution:
             sigma: The parameter sigma
         """
         # The solution parameters
-        self.gamma = gamma
-        self.sigma = sigma
         self.ratio_k = ratio_k
+
+        if self.ratio_k == 161.4476387975881:
+            gamma = 0.1
+            sigma = -14.92256510455152
+        else:
+            raise ValueError("Ratio k not implemented")
 
         # The exact solution within the 4 quadrants
         def uext_q1(x, gamma, sigma):
@@ -93,10 +101,102 @@ class ExactSolution:
             return (r**gamma) * h1 * np.cos((theta - 1.5 * np.pi - sigma) * gamma)
 
         self.list_uext = []
-        self.list_uext.append(lambda x: uext_q1(x, self.gamma, self.sigma))
-        self.list_uext.append(lambda x: uext_q2(x, self.gamma, self.sigma))
-        self.list_uext.append(lambda x: uext_q3(x, self.gamma, self.sigma))
-        self.list_uext.append(lambda x: uext_q4(x, self.gamma, self.sigma))
+        self.list_uext.append(lambda x: uext_q1(x, gamma, sigma))
+        self.list_uext.append(lambda x: uext_q2(x, gamma, sigma))
+        self.list_uext.append(lambda x: uext_q3(x, gamma, sigma))
+        self.list_uext.append(lambda x: uext_q4(x, gamma, sigma))
+
+    def interpolate_to_function(
+        self,
+        f: dfem.Function,
+        quadrants: typing.List[NDArray],
+    ):
+        """Interpolates the exact solution into a function
+
+        Args:
+            f:         The finite-element function
+            quadrants: The cells within each quadrant of the squared domain
+        """
+
+        # Interpolate the exact solution
+        for quadrant, uext in zip(quadrants, self.list_uext):
+            f.interpolate(uext, cells=quadrant)
+
+
+class ExactSolutionRiviere:
+    """The exact solution following [1]:
+
+    uext = r(x)^gamma * (a_i * cos(alpha * theta) + b_i * sin(alpha * theta))
+
+    [1] Reviere, B. and Wheeler M., https://doi.org/10.1016/S0898-1221(03)90086-1, 2003
+    """
+
+    def __init__(self, ratio_k: float) -> None:
+        """Constructor
+
+        Args:
+            a:       The parameters a
+            b:       The parameters b
+            alpha:   The parameter alpha
+            ratio_k: The ratio of the diffusion coefficient
+        """
+        # The solution parameters
+        self.ratio_k = ratio_k
+
+        # Set other solution parameters
+        if ratio_k == 5:
+            alpha = 0.53544095
+            a = [0.44721360, -0.74535599, -0.94411759, -2.40170264]
+            b = [1.0, 2.33333333, 0.55555556, -0.48148148]
+        elif ratio_k == 100:
+            alpha = 0.12690207
+            a = [0.1, -9.60396040, -0.48035487, 7.70156488]
+            b = [1.0, 2.96039604, -0.88275659, -6.45646175]
+        else:
+            raise ValueError("Ratio k not implemented")
+
+        # The exact solution within the 4 quadrants
+        def uext_q1(x, ai, bi, alpha):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            arg = alpha * np.arctan2(x[1], x[0])
+
+            return (r**alpha) * (ai * np.sin(arg) + bi * np.cos(arg))
+
+        def uext_q2(x, ai, bi, alpha):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            arg = alpha * np.arctan2(x[1], x[0])
+
+            return (r**alpha) * (ai * np.sin(arg) + bi * np.cos(arg))
+
+        def uext_q3(x, ai, bi, alpha):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            arg = alpha * (np.pi + np.arctan(x[1] / x[0]))
+
+            return (r**alpha) * (ai * np.sin(arg) + bi * np.cos(arg))
+
+        def uext_q4(x, ai, bi, alpha):
+            # The radius r
+            r = np.sqrt(x[0] * x[0] + x[1] * x[1])
+
+            # The angle theta
+            arg = alpha * (2 * np.pi + np.arctan2(x[1], x[0]))
+
+            return (r**alpha) * (ai * np.sin(arg) + bi * np.cos(arg))
+
+        self.list_uext = []
+        self.list_uext.append(lambda x: uext_q1(x, a[0], b[0], alpha))
+        self.list_uext.append(lambda x: uext_q2(x, a[1], b[1], alpha))
+        self.list_uext.append(lambda x: uext_q3(x, a[2], b[2], alpha))
+        self.list_uext.append(lambda x: uext_q4(x, a[3], b[3], alpha))
 
     def interpolate_to_function(
         self,
@@ -291,7 +391,9 @@ class AdaptiveSquare:
 
 # --- The primal problem
 def solve(
-    domain: AdaptiveSquare, uext: ExactSolution, degree: int
+    domain: AdaptiveSquare,
+    uext: typing.Union[ExactSolutionKellogg, ExactSolutionRiviere],
+    degree: int,
 ) -> typing.Tuple[dfem.Function, typing.Any]:
     """Solves the Poisson problem based on lagrangian finite elements
 
@@ -477,7 +579,7 @@ def estimate_error(
 def post_processing(
     domain: AdaptiveSquare,
     k: dfem.Function,
-    uext: ExactSolution,
+    uext: typing.Union[ExactSolutionKellogg, ExactSolutionRiviere],
     uh: dfem.Function,
     eta_h_tot: float,
     results: NDArray,
@@ -513,16 +615,27 @@ def post_processing(
 if __name__ == "__main__":
     # --- Parameters ---
     # The orders of the FE spaces
-    order_prime = 2
-    order_eqlb = 2
+    order_prime = 1
+    order_eqlb = 1
 
     # Adaptive algorithm
-    nref = 30
+    nref = 15
     doerfler = 0.5
+
+    # Type of exact solution
+    extsol_type = ExtSolType.riviere_5
 
     # --- Execute adaptive calculation ---
     # The exact solution
-    uext = ExactSolution(0.1, -14.92256510455152, 161.4476387975881)
+    if extsol_type == ExtSolType.riviere_5:
+        uext = ExactSolutionRiviere(5)
+        outname_base = "Riviere5"
+    elif extsol_type == ExtSolType.riviere_100:
+        uext = ExactSolutionRiviere(100)
+        outname_base = "Riviere100"
+    elif extsol_type == ExtSolType.kellogg_161:
+        uext = ExactSolutionKellogg(161.4476387975881)
+        outname_base = "Kellogg161"
 
     # The domain
     domain = AdaptiveSquare(2)
@@ -544,7 +657,7 @@ if __name__ == "__main__":
         post_processing(domain, k, uext, uh, eta_h_tot, results)
 
         # Refine
-        domain.refine(doerfler, eta_h, outname="AdaptiveKellogg")
+        domain.refine(doerfler, eta_h, outname=outname_base)
         print(uh.function_space.dofmap.index_map.size_global)
 
     # Export results
@@ -556,7 +669,7 @@ if __name__ == "__main__":
     )
     results[:, 6] = results[:, 4] / results[:, 2]
 
-    outname = "AdaptiveKellogg_porder-{}_eorder-{}.csv".format(order_prime, order_eqlb)
+    outname = outname_base + "_porder-{}_eorder-{}.csv".format(order_prime, order_eqlb)
     header = "nelmt, ndofs, erruh1, rateuh1, eeuh1, rateeeuh1, ieff"
 
     np.savetxt(outname, results, delimiter=",", header=header)
