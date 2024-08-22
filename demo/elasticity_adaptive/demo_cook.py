@@ -375,11 +375,6 @@ def solve(
         solver.solve(L, uh.vector)
         timing += time.perf_counter()
 
-        outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "test_solution.xdmf", "w")
-        outfile.write_mesh(domain.mesh)
-        outfile.write_function(uh, 0)
-        outfile.close()
-
         # The approximated stress
         sigma_h = 2 * ufl.sym(ufl.grad(uh)) + pi_1 * ufl.div(uh) * ufl.Identity(2)
 
