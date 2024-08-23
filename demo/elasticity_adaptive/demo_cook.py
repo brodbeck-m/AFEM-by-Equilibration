@@ -309,7 +309,7 @@ def solve(
     p_0: float,
     sdisc_type: DiscType,
     degree: int,
-) -> typing.Tuple[dfem.Function, int, typing.Any]:
+) -> typing.Tuple[typing.List[dfem.Function], int, typing.Any]:
     """Solver for linear elasticity based on Lagrangian finite elements
 
     Args:
@@ -326,33 +326,34 @@ def solve(
     # Initialise timing
     timing = 0
 
-    if sdisc_type == DiscType.displacement_pressure:
-        raise NotImplementedError("UP not implemented")
-    else:
+    if sdisc_type == DiscType.displacement:
+        # Check input
+        if degree < 2:
+            raise ValueError("Lagrangian element for displacement requires k>=2")
+
         # Set function space (primal problem)
-        V_prime = dfem.VectorFunctionSpace(domain.mesh, ("P", degree))
-        uh = dfem.Function(V_prime)
+        V = dfem.VectorFunctionSpace(domain.mesh, ("P", degree))
+        uh = dfem.Function(V)
 
         # Set trial and test functions
-        u = ufl.TrialFunction(V_prime)
-        v_u = ufl.TestFunction(V_prime)
+        u = ufl.TrialFunction(V)
+        v_u = ufl.TestFunction(V)
 
-        # Equation system
+        # The bilinear form
         sigma = 2 * ufl.sym(ufl.grad(u)) + pi_1 * ufl.div(u) * ufl.Identity(2)
-
         a = dfem.form(ufl.inner(sigma, ufl.sym(ufl.grad(v_u))) * ufl.dx)
 
-        # The traction BC on surface 3
+        # The linear form (traction on surface 3)
         l = dfem.form(ufl.inner(ufl.as_vector([0, p_0]), v_u) * domain.ds(3))
 
-        # Dirichlet boundary conditions
-        uD = dfem.Function(V_prime)
+        # Dirichlet BCs
+        uD = dfem.Function(V)
 
         fcts = domain.facet_functions.indices[domain.facet_functions.values == 1]
-        dofs = dfem.locate_dofs_topological(V_prime, 1, fcts)
+        dofs = dfem.locate_dofs_topological(V, 1, fcts)
         bc_essnt = [dfem.dirichletbc(uD, dofs)]
 
-        # Solve primal problem
+        # Solve
         timing -= time.perf_counter()
         A = dfem.petsc.assemble_matrix(a, bcs=bc_essnt)
         A.assemble()
@@ -375,15 +376,90 @@ def solve(
         solver.solve(L, uh.vector)
         timing += time.perf_counter()
 
+        # The list of primal solutions
+        uh_i = [uh]
+
         # The approximated stress
         sigma_h = 2 * ufl.sym(ufl.grad(uh)) + pi_1 * ufl.div(uh) * ufl.Identity(2)
 
         # The number of primal DOFs
         ndofs = 2 * uh.function_space.dofmap.index_map.size_global
+    elif sdisc_type == DiscType.displacement_pressure:
+        # Set function space
+        elmt_u = ufl.VectorElement("P", domain.mesh.ufl_cell(), degree + 1)
+        elmt_p = ufl.FiniteElement("P", domain.mesh.ufl_cell(), degree)
+
+        V = dfem.FunctionSpace(domain.mesh, ufl.MixedElement([elmt_u, elmt_p]))
+        uh = dfem.Function(V)
+
+        # Set trial and test functions
+        u, p = ufl.TrialFunctions(V)
+        v_u, v_p = ufl.TestFunctions(V)
+
+        # Equation system
+        sigma = 2 * ufl.sym(ufl.grad(u)) + p * ufl.Identity(2)
+
+        a = dfem.form(
+            ufl.inner(sigma, ufl.sym(ufl.grad(v_u))) * ufl.dx
+            + (ufl.div(u) - (1 / pi_1) * p) * v_p * ufl.dx
+        )
+
+        # The linear form (traction on surface 3)
+        l = dfem.form(ufl.inner(ufl.as_vector([0, p_0]), v_u) * domain.ds(3))
+
+        # Dirichlet BCs
+        Vu, _ = V.sub(0).collapse()
+        Vp, _ = V.sub(1).collapse()
+
+        fcts = domain.facet_functions.indices[domain.facet_functions.values == 1]
+        dofs = dfem.locate_dofs_topological((V.sub(0), Vu), 1, fcts)
+        bc_essnt = [dfem.dirichletbc(dfem.Function(Vu), dofs, V.sub(0))]
+
+        # Solve
+        timing -= time.perf_counter()
+        A = dfem.petsc.assemble_matrix(a, bcs=bc_essnt)
+        A.assemble()
+
+        L = dfem.petsc.create_vector(l)
+        dfem.petsc.assemble_vector(L, l)
+        dfem.apply_lifting(L, [a], [bc_essnt])
+        L.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+        dfem.set_bc(L, bc_essnt)
+
+        solver = PETSc.KSP().create(MPI.COMM_WORLD)
+        solver.setOperators(A)
+        solver.setType(PETSc.KSP.Type.PREONLY)
+        pc = solver.getPC()
+        pc.setType(PETSc.PC.Type.LU)
+        pc.setFactorSolverType("mumps")
+
+        solver.setTolerances(rtol=1e-10, atol=1e-12, max_it=1000)
+
+        solver.solve(L, uh.vector)
+        timing += time.perf_counter()
+
+        # The list of primal solutions
+        uh_i = [uh.sub(0).collapse(), uh.sub(1).collapse()]
+
+        outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "test.xdmf", "w")
+        outfile.write_mesh(domain.mesh)
+
+        uh_i[0].name = "u"
+        uh_i[1].name = "p"
+        outfile.write_function(uh_i[0], 0)
+        outfile.write_function(uh_i[1], 0)
+
+        outfile.close()
+
+        # The approximated stress
+        sigma_h = 2 * ufl.sym(ufl.grad(uh_i[0])) + uh_i[1] * ufl.Identity(2)
+
+        # The number of primal DOFs
+        ndofs = 2 * Vu.dofmap.index_map.size_global + Vp.dofmap.index_map.size_global
 
     print(f"Primal problem solved in {timing:.4e} s")
 
-    return uh, ndofs, sigma_h
+    return uh_i, ndofs, sigma_h
 
 
 # --- The flux equilibration
@@ -519,9 +595,10 @@ def estimate_error(
     domain: AdaptiveCMembrane,
     pi_1: float,
     sdisc_type: DiscType,
+    u_h: typing.List[dfem.Function],
     delta_sigmaR: typing.Any,
     korns_constants: dfem.Function,
-    guarantied_upper_bound: typing.Optional[bool] = False,
+    guarantied_upper_bound: typing.Optional[bool] = True,
 ) -> typing.Tuple[dfem.Function, typing.List[float]]:
     """Estimates the error for elasticity
 
@@ -549,16 +626,32 @@ def estimate_error(
     )
     v = ufl.TestFunction(V_e)
 
+    # Error from stress difference and assymetric part
+    a_delta_sigma = 0.5 * (
+        delta_sigmaR - (pi_1 / (2 + 2 * pi_1)) * ufl.tr(delta_sigmaR) * ufl.Identity(2)
+    )
+    err_wsym = 0.5 * korns_constants * (delta_sigmaR[0, 1] - delta_sigmaR[1, 0])
+
     if sdisc_type == DiscType.displacement_pressure:
-        raise NotImplementedError("UP not implemented")
+        # Error from divergence aproximation
+        ca_squared = ((2 * pi_1) / (1 + pi_1)) * (
+            1 + (pi_1 / (1 + pi_1)) * ((korns_constants * korns_constants) - 9)
+        )
+        err_div = ufl.div(u_h[0]) - (1 / pi_1) * u_h[1]
+
+        # The error estimate
+        if guarantied_upper_bound:
+            eta = (
+                2 * ufl.inner(delta_sigmaR, a_delta_sigma)
+                + ufl.inner(err_wsym, err_wsym)
+                + ca_squared * ufl.inner(err_div, err_div)
+            )
+        else:
+            eta = 2 * ufl.inner(delta_sigmaR, a_delta_sigma) + ca_squared * ufl.inner(
+                err_div, err_div
+            )
     else:
         # The error estimate
-        a_delta_sigma = 0.5 * (
-            delta_sigmaR
-            - (pi_1 / (2 + 2 * pi_1)) * ufl.tr(delta_sigmaR) * ufl.Identity(2)
-        )
-        err_wsym = 0.5 * korns_constants * (delta_sigmaR[0, 1] - delta_sigmaR[1, 0])
-
         if guarantied_upper_bound:
             eta = ufl.inner(delta_sigmaR, a_delta_sigma) + ufl.inner(err_wsym, err_wsym)
         else:
@@ -569,25 +662,32 @@ def estimate_error(
     L_eta = dfem.petsc.create_vector(form_eta)
     dfem.petsc.assemble_vector(L_eta, form_eta)
 
+    # The overall error (contributions)
+    err_dsigmaR = domain.mesh.comm.allreduce(
+        dfem.assemble_scalar(
+            dfem.form(ufl.inner(a_delta_sigma, delta_sigmaR) * ufl.dx)
+        ),
+        op=MPI.SUM,
+    )
+    err_asym = domain.mesh.comm.allreduce(
+        dfem.assemble_scalar(dfem.form(ufl.inner(err_wsym, err_wsym) * ufl.dx)),
+        op=MPI.SUM,
+    )
+
+    etai_tot = [np.sqrt(np.sum(L_eta.array)), np.sqrt(err_dsigmaR), np.sqrt(err_asym)]
+
     if sdisc_type == DiscType.displacement_pressure:
-        raise NotImplementedError("UP not implemented")
-    else:
-        # Assemble error contributions
-        err_dsigmaR = domain.mesh.comm.allreduce(
+        # The divergence contribution
+        err_div = domain.mesh.comm.allreduce(
             dfem.assemble_scalar(
-                dfem.form(ufl.inner(a_delta_sigma, delta_sigmaR) * ufl.dx)
+                dfem.form(ca_squared * ufl.inner(err_div, err_div) * ufl.dx)
             ),
             op=MPI.SUM,
         )
-        err_asym = domain.mesh.comm.allreduce(
-            dfem.assemble_scalar(dfem.form(ufl.inner(err_wsym, err_wsym) * ufl.dx)),
-            op=MPI.SUM,
-        )
-        return L_eta, [
-            np.sqrt(np.sum(L_eta.array)),
-            np.sqrt(err_dsigmaR),
-            np.sqrt(err_asym),
-        ]
+
+        etai_tot.append(np.sqrt(err_div))
+
+    return L_eta, etai_tot
 
 
 # --- Post processing
@@ -618,28 +718,28 @@ def post_processing(
 
     if sdisc_type == DiscType.displacement_pressure:
         # The function-space W for the error
-        degree = u_ext.function_space.sub(0).element.basix_element.degree + 2
+        degree = u_ext[0].function_space.element.basix_element.degree + 2
         Vu_W = dfem.VectorFunctionSpace(domain.mesh, ("P", degree))
         Vp_W = dfem.FunctionSpace(domain.mesh, ("P", degree - 1))
 
         # Interpolate the exact solution into space W
         uext_W.append(dfem.Function(Vu_W))
-        uext_W[0].interpolate(u_ext.sub(0).collapse())
+        uext_W[0].interpolate(u_ext[0])
 
         uext_W.append(dfem.Function(Vp_W))
-        uext_W[1].interpolate(u_ext.sub(1).collapse())
+        uext_W[1].interpolate(u_ext[1])
 
         # The error in W
         err_W.append(dfem.Function(Vu_W))
         err_W.append(dfem.Function(Vp_W))
     else:
         # The function-space W for the error
-        degree = u_ext.function_space.element.basix_element.degree + 2
+        degree = u_ext[0].function_space.element.basix_element.degree + 2
         Vu_W = dfem.VectorFunctionSpace(domain.mesh, ("P", degree))
 
         # The exact solution in W
         uext_W.append(dfem.Function(Vu_W))
-        uext_W[0].interpolate(u_ext)
+        uext_W[0].interpolate(u_ext[0])
 
         # The error in W
         err_W.append(dfem.Function(Vu_W))
@@ -648,23 +748,18 @@ def post_processing(
     for n, uh in enumerate(list_uh):
 
         # Calculate the error of the primal variables
-        for i, (err_i, uext_i) in enumerate(zip(err_W, uext_W)):
+        for err_i, uext_i, uh_i in zip(err_W, uext_W, uh):
             # Reinitalisation
             err_i.x.array[:] = 0.0
 
             # Interpolate uh into higer order space W
-            if sdisc_type == DiscType.displacement_pressure:
-                err_i.interpolate(uh.sub(i).collapse())
-            else:
-                err_i.interpolate(uh)
+            err_i.interpolate(uh_i)
 
             # Calculate error
             err_i.x.array[:] -= uext_i.x.array[:]
 
         # Calculate the error
-        if sdisc_type == DiscType.displacement_pressure:
-            raise NotImplementedError("UP not implemented")
-        else:
+        if sdisc_type == DiscType.displacement:
             form_err = dfem.form(
                 (
                     ufl.inner(ufl.sym(ufl.grad(err_W[0])), ufl.sym(ufl.grad(err_W[0])))
@@ -672,10 +767,45 @@ def post_processing(
                 )
                 * ufl.dx
             )
+        else:
+            form_err = dfem.form(
+                (
+                    2
+                    * ufl.inner(
+                        ufl.sym(ufl.grad(err_W[0])), ufl.sym(ufl.grad(err_W[0]))
+                    )
+                    + (1 / pi_1) * err_W[1] * err_W[1]
+                )
+                * ufl.dx
+            )
 
         results[n, 2] = np.sqrt(
             domain.mesh.comm.allreduce(dfem.assemble_scalar(form_err), op=MPI.SUM)
         )
+
+    # Export results
+    offs = 7 if sdisc_type == DiscType.displacement else 8
+    results[1:, 3] = np.log(results[1:, 2] / results[:-1, 2]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[1:, offs] = np.log(results[1:, 4] / results[:-1, 4]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[1:, offs + 1] = np.log(results[1:, 5] / results[:-1, 5]) / np.log(
+        results[:-1, 1] / results[1:, 1]
+    )
+    results[:, offs + 2] = results[:, 4] / results[:, 2]
+
+    if sdisc_type == DiscType.displacement:
+        outname = "CooksMembrane-u_P-{}_RT-{}.csv".format(order_prime, order_eqlb)
+        header = "nelmt, ndofs, err, rateerr, eetot, eedsigR, eeasym, rateetot, rateesigR, ieff"
+
+        np.savetxt(outname, results[:, 0:10], delimiter=",", header=header)
+    else:
+        outname = "CooksMembrane-up_TH-{}_RT-{}.csv".format(order_prime, order_eqlb)
+        header = "nelmt, ndofs, err, rateerr, eetot, eedsigR, eeasym, eediv, rateetot, rateesigR, ieff"
+
+        np.savetxt(outname, results, delimiter=",", header=header)
 
 
 if __name__ == "__main__":
@@ -695,7 +825,7 @@ if __name__ == "__main__":
     guarantied_upper_bound = True
 
     # Adaptive algorithm
-    nref = 15
+    nref = 10
     doerfler = 0.5
 
     # --- Execute adaptive calculation ---
@@ -704,7 +834,7 @@ if __name__ == "__main__":
 
     # Storage of results
     list_uh = []
-    results = np.zeros((nref, 10))
+    results = np.zeros((nref, 11))
 
     for n in range(0, nref):
         # Solve
@@ -712,12 +842,18 @@ if __name__ == "__main__":
 
         # Equilibrate the flux
         delta_sigmaR, korns_constants = equilibrate_flux(
-            domain, p_0, -sigma_h, order_eqlb, False
+            domain, p_0, -sigma_h, order_eqlb, True
         )
 
         # Mark
         eta_h, eta_h_tot = estimate_error(
-            domain, pi_1, sdisc_type, delta_sigmaR, korns_constants
+            domain,
+            pi_1,
+            sdisc_type,
+            u_h,
+            delta_sigmaR,
+            korns_constants,
+            guarantied_upper_bound,
         )
 
         # Store results
@@ -741,20 +877,3 @@ if __name__ == "__main__":
 
     # Evaluate error
     post_processing(domain, pi_1, sdisc_type, u_ext, list_uh, results)
-
-    # Export results
-    results[1:, 3] = np.log(results[1:, 2] / results[:-1, 2]) / np.log(
-        results[:-1, 1] / results[1:, 1]
-    )
-    results[1:, 7] = np.log(results[1:, 4] / results[:-1, 4]) / np.log(
-        results[:-1, 1] / results[1:, 1]
-    )
-    results[1:, 8] = np.log(results[1:, 5] / results[:-1, 5]) / np.log(
-        results[:-1, 1] / results[1:, 1]
-    )
-    results[:, 9] = results[:, 4] / results[:, 2]
-
-    outname = "CooksMembrane_porder-{}_eorder-{}.csv".format(order_prime, order_eqlb)
-    header = "nelmt, ndofs, erruh1, rateuh1, eetot, eedsigR, eeasym, rateetot, rateesigR, ieff"
-
-    np.savetxt(outname, results, delimiter=",", header=header)
