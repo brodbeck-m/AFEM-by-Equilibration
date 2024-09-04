@@ -223,23 +223,28 @@ class AdaptiveCMembrane:
 
         # Export marker to ParaView
         if outname is not None:
-            V_out = dfem.FunctionSpace(self.mesh, ("DG", 0))
-            eta_h_out = dfem.Function(V_out)
-            eta_h_out.name = "eta_h"
-            eta_h_out.x.array[:] = eta_h.array[:]
-
             outfile = dolfinx.io.XDMFFile(
                 MPI.COMM_WORLD,
                 outname + "-mesh" + str(self.refinement_level) + "_error.xdmf",
                 "w",
             )
             outfile.write_mesh(self.mesh)
-            outfile.write_function(eta_h_out, 0)
+
+            if eta_h is not None:
+                V_out = dfem.FunctionSpace(self.mesh, ("DG", 0))
+                eta_h_out = dfem.Function(V_out)
+                eta_h_out.name = "eta_h"
+                eta_h_out.x.array[:] = eta_h.array[:]
+                outfile.write_function(eta_h_out, 0)
+
             outfile.close()
 
         # Refine the mesh
         if np.isclose(doerfler, 1.0):
             refined_mesh = dmesh.refine(self.mesh)
+
+            if eta_h is not None:
+                eta_total = np.sum(eta_h.array)
         else:
             # Check input
             if eta_h is None:
@@ -821,12 +826,12 @@ if __name__ == "__main__":
     order_prime = 2
 
     # Error estimation
-    order_eqlb = 3
+    order_eqlb = 2
     guarantied_upper_bound = True
 
     # Adaptive algorithm
     nref = 10
-    doerfler = 0.5
+    doerfler = 0.6
 
     # --- Execute adaptive calculation ---
     # The domain
