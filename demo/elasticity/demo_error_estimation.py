@@ -233,7 +233,7 @@ if __name__ == "__main__":
     mesh_type = MeshType.builtin
 
     # Material: pi_1 = lambda/mu
-    pi_1 = 1.0
+    pi_1 = 2.5
 
     # The spatial discretisation
     sdisc_type = DiscType.displacement
@@ -247,7 +247,7 @@ if __name__ == "__main__":
 
     # The mesh resolution
     sdisc_nelmt_init = 1
-    convstudy_nref = 7
+    convstudy_nref = 10
 
     # --- Convergence study ---
     if sdisc_type == DiscType.displacement:
@@ -325,7 +325,7 @@ if __name__ == "__main__":
         outname = "ManSol-u_P-{}_RT-{}.csv".format(order_prime, order_eqlb)
         header_protocol = (
             "hmin, nelmt, err, rateerr, errsigmahdiv, ratesigmahdiv, "
-            "eetot, eedsigR, eeosc, eeasym, rateetot, rateedsigR, ieff"
+            "eetot, eedsigR, eeasym, eeosc, rateetot, rateedsigR, ieff"
         )
     elif sdisc_type == DiscType.displacement_pressure:
         outname = "ManSol-up_TH-{}_RT-{}.csv".format(order_prime, order_eqlb)
