@@ -13,8 +13,8 @@ Solution of the quasi-static linear elasticity equation
 with subsequent stress reconstruction. A convergence 
 study based on a manufactured solution
 
-        u_ext = [sin(pi * x) * sin(pi * y),
-                -sin(2*pi * x) * sin(2*pi * y)]
+    u_ext = [ sin(pi * x) * cos(pi * y) + x²/(2*pi_1),
+             -cos(pi * x) * sin(pi * y) + y²/(2*pi_1)]
 
 is performed. Dirichlet boundary conditions are 
 applied on boundary surfaces [1, 2, 3, 4].
@@ -24,6 +24,7 @@ from enum import Enum
 import gmsh
 from mpi4py import MPI
 import numpy as np
+from petsc4py import PETSc
 import time
 import typing
 
@@ -43,20 +44,24 @@ from dolfinx_eqlb.lsolver import local_projection
 
 
 # --- The exact solution
-def exact_solution(x) -> typing.Any:
+def exact_solution(x: typing.Any, pi_1: float) -> typing.Any:
     """Exact solution
-    u_ext = [sin(pi * x) * sin(pi * y), -sin(2*pi * x) * sin(2*pi * y)]
+    u_ext = [ sin(pi * x) * cos(pi * y) + x²/(2*pi_1),
+             -cos(pi * x) * sin(pi * y) + y²/(2*pi_1)]
 
     Args:
-        x: The spatial position
+        x:    The spatial position
+        pi_1: The ratio of lambda and mu
 
     Returns:
         The exact function as ufl-expression
     """
     return ufl.as_vector(
         [
-            ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1]),
-            -ufl.sin(2 * ufl.pi * x[0]) * ufl.sin(2 * ufl.pi * x[1]),
+            ufl.sin(ufl.pi * x[0]) * ufl.cos(ufl.pi * x[1])
+            + 0.5 * (x[0] * x[0] / pi_1),
+            -ufl.cos(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
+            + 0.5 * (x[1] * x[1] / pi_1),
         ]
     )
 
@@ -141,7 +146,7 @@ def create_unit_square_builtin(
     return domain, facet_tag, ds
 
 
-def create_unit_square_gmesh(
+def create_unit_square_gmsh(
     h: float,
 ) -> typing.Tuple[dmesh.Mesh, dmesh.MeshTagsMetaClass, ufl.Measure]:
     """Create a unit square using gmsh
@@ -269,171 +274,234 @@ def create_unit_square_gmesh(
 
 
 # --- The primal problem
-def solve_primal_problem(
-    order_prime: int,
+class DiscType(Enum):
+    displacement = 0
+    displacement_pressure = 1
+
+
+class SolverType(Enum):
+    LU = 0
+    CG = 1
+
+
+def solve(
     domain: dmesh.Mesh,
     facet_tags: dmesh.MeshTagsMetaClass,
-    ds: ufl.Measure,
     pi_1: float,
-    pdegree_rhs: typing.Optional[int] = None,
-    solver: str = "lu",
-) -> typing.Tuple[dfem.Function, typing.Any]:
+    sdisc_type: DiscType,
+    degree: int,
+    degree_rhs: typing.Optional[int] = None,
+    solver_type: typing.Optional[SolverType] = SolverType.LU,
+) -> typing.Tuple[
+    typing.Union[dfem.Function, typing.Any],
+    typing.List[dfem.Function],
+    typing.Any,
+    typing.Any,
+]:
     """Solves the problem of linear elasticity based on lagrangian finite elements
 
     Args:
-        order_prime: The order of the FE space
         domain:      The mesh
         facet_tags:  The facet tags
-        ds:          The measure for the boundary integrals
         pi_1:        The ratio of lambda and mu
-        pdegree_rhs: The degree of the DG space into which the RHS
-                     is projected into
-        solver:      The solver type (lu or cg)
+        sdisc_type:  The discretisation type
+        degree:      The degree of the FE space
+        degree_rhs:  The degree of the DG space into which the RHS
+                     is projected
+        solver:      The solver type
 
     Returns:
-        The displacement solution,
-        The exact stress tensor
+        The right-hand-side,
+        The exact stress tensor,
+        The approximated solution,
+        The approximated stress tensor
     """
 
-    # Check input
-    if order_prime < 2:
-        raise ValueError("Consistency condition for weak symmetry not fulfilled!")
-
-    # The spatial dimension
-    gdim = domain.geometry.dim
-
-    # Set function space (primal problem)
-    V_prime = dfem.VectorFunctionSpace(domain, ("CG", order_prime))
-
     # The exact solution
-    u_ext = exact_solution(ufl.SpatialCoordinate(domain))
-    sigma_ext = 2 * ufl.sym(ufl.grad(u_ext)) + pi_1 * ufl.div(u_ext) * ufl.Identity(
-        gdim
-    )
+    u_ext = exact_solution(ufl.SpatialCoordinate(domain), pi_1)
+    sigma_ext = 2 * ufl.sym(ufl.grad(u_ext)) + pi_1 * ufl.div(u_ext) * ufl.Identity(2)
 
     # The right-hand-side
     f = -ufl.div(sigma_ext)
 
-    if pdegree_rhs is None:
+    if degree_rhs is None:
         rhs = f
     else:
-        rhs = local_projection(
-            dfem.VectorFunctionSpace(domain, ("DG", pdegree_rhs)), [f]
-        )[0]
+        V_rhs = dfem.VectorFunctionSpace(domain, ("DG", degree_rhs))
+        rhs = local_projection(V_rhs, [f])[0]
 
-    # Set variational form
-    u = ufl.TrialFunction(V_prime)
-    v = ufl.TestFunction(V_prime)
+    # --- Set weak form and BCs
+    if sdisc_type == DiscType.displacement:
+        # Check input
+        if degree < 2:
+            raise ValueError("Consistency condition for weak symmetry not fulfilled!")
 
-    sigma = 2 * ufl.sym(ufl.grad(u)) + pi_1 * ufl.div(u) * ufl.Identity(gdim)
+        # The function space
+        V = dfem.VectorFunctionSpace(domain, ("CG", degree))
+        uh = dfem.Function(V)
 
-    a_prime = ufl.inner(sigma, ufl.sym(ufl.grad(v))) * ufl.dx
-    l_prime = ufl.inner(rhs, v) * ufl.dx
+        # Trial- and test-functions
+        u = ufl.TrialFunction(V)
+        v = ufl.TestFunction(V)
 
-    # Set Dirichlet boundary conditions
-    u_dirichlet = dfem.Function(V_prime)
-    interpolate_ufl_to_function(u_ext, u_dirichlet)
+        # The variational form
+        sigma = 2 * ufl.sym(ufl.grad(u)) + pi_1 * ufl.div(u) * ufl.Identity(2)
 
-    dofs = dfem.locate_dofs_topological(V_prime, 1, facet_tags.indices[:])
-    bcs_esnt = [dfem.dirichletbc(u_dirichlet, dofs)]
+        a = dfem.form(ufl.inner(sigma, ufl.sym(ufl.grad(v))) * ufl.dx)
+        l = dfem.form(ufl.inner(rhs, v) * ufl.dx)
 
-    # Solve problem
+        # The Dirichlet BCs
+        uD = dfem.Function(V)
+        interpolate_ufl_to_function(u_ext, uD)
+
+        dofs = dfem.locate_dofs_topological(V, 1, facet_tags.indices[:])
+        bcs_esnt = [dfem.dirichletbc(uD, dofs)]
+    elif sdisc_type == DiscType.displacement_pressure:
+        # Check input
+        if solver_type != SolverType.LU:
+            raise ValueError(
+                "u-p formulation should be solved using a LU decomposition!"
+            )
+
+        # Set function space
+        elmt_u = ufl.VectorElement("P", domain.ufl_cell(), degree + 1)
+        elmt_p = ufl.FiniteElement("P", domain.ufl_cell(), degree)
+
+        V = dfem.FunctionSpace(domain, ufl.MixedElement([elmt_u, elmt_p]))
+        uh = dfem.Function(V)
+
+        # Trial- and test-functions
+        u, p = ufl.TrialFunctions(V)
+        v_u, v_p = ufl.TestFunctions(V)
+
+        # The variational form
+        sigma = 2 * ufl.sym(ufl.grad(u)) + p * ufl.Identity(2)
+
+        a = dfem.form(
+            ufl.inner(sigma, ufl.sym(ufl.grad(v_u))) * ufl.dx
+            + (ufl.div(u) - (1 / pi_1) * p) * v_p * ufl.dx
+        )
+        l = dfem.form(ufl.inner(rhs, v_u) * ufl.dx)
+
+        # The Dirichlet BCs
+        Vu, _ = V.sub(0).collapse()
+
+        uD = dfem.Function(Vu)
+        interpolate_ufl_to_function(u_ext, uD)
+
+        dofs = dfem.locate_dofs_topological((V.sub(0), Vu), 1, facet_tags.indices[:])
+        bcs_esnt = [dfem.dirichletbc(uD, dofs, V.sub(0))]
+    else:
+        raise ValueError("Unknown discretisation type")
+
+    # --- Solve the equation system
     timing = 0
 
-    if solver == "lu":
-        solveoptions = {
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "ksp_rtol": 1e-12,
-            "ksp_atol": 1e-12,
-        }
-    else:
-        solveoptions = {
-            "ksp_type": "cg",
-            "pc_type": "hypre",
-            "hypre_type": "boomeramg",
-            "ksp_rtol": 1e-12,
-            "ksp_atol": 1e-12,
-        }
-
-    problem_prime = dfem.petsc.LinearProblem(
-        a_prime, l_prime, bcs_esnt, petsc_options=solveoptions
-    )
-
     timing -= time.perf_counter()
-    uh = problem_prime.solve()
+    # The system matrix
+    A = dfem.petsc.assemble_matrix(a, bcs=bcs_esnt)
+    A.assemble()
+
+    # The right-hand-side
+    L = dfem.petsc.create_vector(l)
+    dfem.petsc.assemble_vector(L, l)
+    dfem.apply_lifting(L, [a], [bcs_esnt])
+    L.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+    dfem.set_bc(L, bcs_esnt)
+
+    # The solver
+    solver = PETSc.KSP().create(MPI.COMM_WORLD)
+    solver.setOperators(A)
+
+    if solver_type == SolverType.LU:
+        solver.setType(PETSc.KSP.Type.PREONLY)
+        pc = solver.getPC()
+        pc.setType(PETSc.PC.Type.LU)
+        pc.setFactorSolverType("mumps")
+    elif solver_type == SolverType.CG:
+        solver.setType(PETSc.KSP.Type.CG)
+        pc = solver.getPC()
+        pc.setType(PETSc.PC.Type.HYPRE)
+        pc.setHYPREType("boomeramg")
+    else:
+        raise ValueError("Unsupported solver type")
+
+    # Solve the system
+    solver.setTolerances(rtol=1e-12, atol=1e-12, max_it=1000)
+    solver.solve(L, uh.vector)
+
     timing += time.perf_counter()
 
     print(f"Primal problem solved in {timing:.4e} s")
 
-    return uh, sigma_ext
+    if sdisc_type == DiscType.displacement:
+        # The approximated stress tensor
+        sigma_h = 2 * ufl.sym(ufl.grad(uh)) + pi_1 * ufl.div(uh) * ufl.Identity(2)
+
+        return rhs, sigma_ext, [uh], sigma_h
+    elif sdisc_type == DiscType.displacement_pressure:
+        # Split the mixed solution
+        uh_u = uh.sub(0).collapse()
+        uh_p = uh.sub(1).collapse()
+
+        # The approximated stress tensor
+        sigma_h = 2 * ufl.sym(ufl.grad(uh_u)) + uh_p * ufl.Identity(2)
+
+        return rhs, sigma_ext, [uh_u, uh_p], sigma_h
 
 
-# --- The flux equilibration
-def equilibrate_flux(
-    order_eqlb: int,
+# --- The equilibration
+def equilibrate(
     domain: dmesh.Mesh,
     facet_tags: dmesh.MeshTagsMetaClass,
-    pi_1: float,
-    uh: dfem.Function,
-    sigma_ext: typing.Any,
+    f: typing.Any,
+    sigma_h: typing.Any,
+    degree: int,
     weak_symmetry: typing.Optional[bool] = True,
     check_equilibration: typing.Optional[bool] = True,
-) -> typing.Tuple[
-    typing.List[dfem.Function], typing.List[dfem.Function], dfem.Function
-]:
+) -> typing.Tuple[typing.Any, typing.Any, dfem.Function]:
     """Equilibrates the negative stress-tensor of linear elasticity
 
     The RHS is assumed to be the divergence of the exact stress
     tensor (manufactured solution).
 
     Args:
-        order_eqlb:          The order of the RT space
         domain:              The mesh
         facet_tags:          The facet tags
-        pi_1:                The ratio of lambda and mu
-        uh:                  The primal solution
-        sigma_ext:           The exact stress-tensor
+        f:                   The right-hand-side
+        sigma_h:             The approximated stress tensor
+        degree:              The degree of the RT space
         weak_symmetry:       Id if weak symmetry condition is enforced
         check_equilibration: Id if equilibration conditions are checked
 
     Returns:
-        The projected stress tensor (row wise),
-        The equilibrated stress tensor (row wise),
+        The projected stress tensor (ufl tensor),
+        The equilibrated stress tensor (ufl tensor),
         The cells Korns constant
     """
 
     # Check input
-    if order_eqlb < 2:
+    if degree < 2:
         raise ValueError("Stress equilibration only possible for k>1")
 
-    # The spatial dimension
-    gdim = domain.geometry.dim
-
-    # The approximate solution
-    sigma_h = -2 * ufl.sym(ufl.grad(uh)) - pi_1 * ufl.div(uh) * ufl.Identity(gdim)
-
-    # Set source term
-    f = -ufl.div(sigma_ext)
-
     # Projected flux
-    # (order_eqlb - 1 would be sufficient but not implemented for semi-explicit eqlb.)
-    V_flux_proj = dfem.VectorFunctionSpace(domain, ("DG", order_eqlb - 1))
+    # (degree - 1 would be sufficient but not implemented for semi-explicit eqlb.)
+    V_flux_proj = dfem.VectorFunctionSpace(domain, ("DG", degree - 1))
     sigma_proj = local_projection(
         V_flux_proj,
         [
-            ufl.as_vector([sigma_h[0, 0], sigma_h[0, 1]]),
-            ufl.as_vector([sigma_h[1, 0], sigma_h[1, 1]]),
+            ufl.as_vector([-sigma_h[0, 0], -sigma_h[0, 1]]),
+            ufl.as_vector([-sigma_h[1, 0], -sigma_h[1, 1]]),
         ],
     )
 
     # Project RHS
-    V_rhs_proj = dfem.FunctionSpace(domain, ("DG", order_eqlb - 1))
+    V_rhs_proj = dfem.FunctionSpace(domain, ("DG", degree - 1))
     rhs_proj = local_projection(V_rhs_proj, [f[0], f[1]])
 
     # Initialise equilibrator
     equilibrator = FluxEqlbSE(
-        order_eqlb,
+        degree,
         domain,
         rhs_proj,
         sigma_proj,
@@ -445,7 +513,7 @@ def equilibrate_flux(
     equilibrator.set_boundary_conditions(
         [facet_tags.indices[:], facet_tags.indices[:]],
         [[], []],
-        quadrature_degree=3 * order_eqlb,
+        quadrature_degree=3 * degree,
     )
 
     # Solve equilibration
@@ -457,24 +525,25 @@ def equilibrate_flux(
 
     print(f"Equilibration solved in {timing:.4e} s")
 
+    # Cast stresses into ufl tensors
+    stress_eqlb = ufl.as_matrix(
+        [
+            [-equilibrator.list_flux[0][0], -equilibrator.list_flux[0][1]],
+            [-equilibrator.list_flux[1][0], -equilibrator.list_flux[1][1]],
+        ]
+    )
+
+    stress_proj = ufl.as_matrix(
+        [
+            [-sigma_proj[0][0], -sigma_proj[0][1]],
+            [-sigma_proj[1][0], -sigma_proj[1][1]],
+        ]
+    )
+
     # --- Check equilibration conditions ---
     if check_equilibration:
-        V_rhs_proj = dfem.VectorFunctionSpace(domain, ("DG", order_eqlb - 1))
-        rhs_proj_vecval = local_projection(V_rhs_proj, [f])[0]
-
-        stress_eqlb = ufl.as_matrix(
-            [
-                [equilibrator.list_flux[0][0], equilibrator.list_flux[0][1]],
-                [equilibrator.list_flux[1][0], equilibrator.list_flux[1][1]],
-            ]
-        )
-
-        stress_proj = ufl.as_matrix(
-            [
-                [sigma_proj[0][0], sigma_proj[0][1]],
-                [sigma_proj[1][0], sigma_proj[1][1]],
-            ]
-        )
+        V_rhs_proj = dfem.VectorFunctionSpace(domain, ("DG", degree - 1))
+        rhs_proj_vecval = local_projection(V_rhs_proj, [-f])[0]
 
         # Check divergence condition
         div_condition_fulfilled = check_divergence_condition(
@@ -482,7 +551,7 @@ def equilibrate_flux(
             stress_proj,
             rhs_proj_vecval,
             mesh=domain,
-            degree=order_eqlb,
+            degree=degree,
             flux_is_dg=True,
         )
 
@@ -504,7 +573,7 @@ def equilibrate_flux(
         if not wsym_condition:
             raise ValueError("Weak symmetry conditions not fulfilled")
 
-    return sigma_proj, equilibrator.list_flux, equilibrator.get_korn_constants()
+    return stress_proj, stress_eqlb, equilibrator.get_korn_constants()
 
 
 if __name__ == "__main__":
@@ -515,31 +584,35 @@ if __name__ == "__main__":
     # Material: pi_1 = lambda/mu
     pi_1 = 1.0
 
-    # The orders of the FE spaces
+    # The spatial discretisation
+    sdisc_type = DiscType.displacement_pressure
     order_prime = 2
-    order_eqlb = 3
+
+    # The stress equilibration
+    order_eqlb = 2
 
     # The mesh resolution
-    sdisc_nelmt = 150
+    sdisc_nelmt = 20
 
     # --- Execute calculation ---
     # Create mesh
     if mesh_type == MeshType.builtin:
         domain, facet_tags, ds = create_unit_square_builtin(sdisc_nelmt)
     elif mesh_type == MeshType.gmsh:
-        domain, facet_tags, ds = create_unit_square_gmesh(1 / sdisc_nelmt)
+        domain, facet_tags, ds = create_unit_square_gmsh(1 / sdisc_nelmt)
     else:
         raise ValueError("Unknown mesh type")
 
     # Solve primal problem
     degree_proj = 1 if (order_eqlb == 2) else None
-    uh, sigma_ref = solve_primal_problem(
-        order_prime, domain, facet_tags, ds, pi_1, pdegree_rhs=degree_proj, solver="cg"
+
+    f, sigma_ref, uh, sigma_h = solve(
+        domain, facet_tags, pi_1, sdisc_type, order_prime, degree_rhs=degree_proj
     )
 
     # Solve equilibration
-    sigma_proj, sigma_eqlb, korns_constants = equilibrate_flux(
-        order_eqlb, domain, facet_tags, pi_1, uh, sigma_ref
+    sigma_proj, sigma_eqlb, korns_constants = equilibrate(
+        domain, facet_tags, f, sigma_h, order_eqlb
     )
 
     # --- Export results to ParaView ---
@@ -548,23 +621,19 @@ if __name__ == "__main__":
     sigma_ref = local_projection(V_dg_ref, [sigma_ref], quadrature_degree=10)
 
     # Project equilibrated flux into appropriate DG space
-    V_dg_hdiv = dfem.VectorFunctionSpace(domain, ("DG", order_eqlb))
-    sigma_eqlb_dg = local_projection(
-        V_dg_hdiv, [sigma_eqlb[0] + sigma_proj[0], sigma_eqlb[1] + sigma_proj[1]]
-    )
+    V_dg_hdiv = dfem.TensorFunctionSpace(domain, ("DG", order_eqlb))
+    sigma_eqlb_dg = local_projection(V_dg_hdiv, [sigma_proj + sigma_eqlb])
 
     # Export primal solution
-    uh.name = "uh"
-    sigma_eqlb_dg[0].name = "sigma_eqlb_row1"
-    sigma_eqlb_dg[1].name = "sigma_eqlb_row2"
+    uh[0].name = "uh"
+    sigma_eqlb_dg[0].name = "sigma_eqlb"
     sigma_ref[0].name = "sigma_ref"
     korns_constants.name = "korns_constants"
 
     outfile = dolfinx.io.XDMFFile(MPI.COMM_WORLD, "demo_equilibrate_stresses.xdmf", "w")
     outfile.write_mesh(domain)
-    outfile.write_function(uh, 1)
+    outfile.write_function(uh[0], 1)
     outfile.write_function(sigma_ref[0], 1)
     outfile.write_function(sigma_eqlb_dg[0], 1)
-    outfile.write_function(sigma_eqlb_dg[1], 1)
     outfile.write_function(korns_constants, 1)
     outfile.close()
