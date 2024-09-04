@@ -317,7 +317,7 @@ def solve(
         pi_1:        The ratio of first and second Lamé parameter
         p_0:         The the traction in y direction on surface 3
         sdisc_type:  The type of the spatial discretisation
-        order_prime: The order of the FE space
+        degree:      The degree of the FE space
 
     Returns:
         The approximate solution
