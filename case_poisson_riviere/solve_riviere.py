@@ -14,7 +14,7 @@ the equilibrated flux while the spatial refinement is based on a Dörfler
 marking strategy. Convergence is reported with respect to the analytical 
 solution [1].
 
-[1] Reviere, B. and Wheeler M., https://doi.org/10.1016/S0898-1221(03)90086-1, 2003
+[1] Riviere, B. and Wheeler M., https://doi.org/10.1016/S0898-1221(03)90086-1, 2003
 """
 
 import numpy as np
@@ -41,7 +41,7 @@ class ExactSolution:
 
     uext = r(x)^gamma * (a_i * cos(alpha * theta) + b_i * sin(alpha * theta))
 
-    [1] Reviere, B. and Wheeler M., https://doi.org/10.1016/S0898-1221(03)90086-1, 2003
+    [1] Riviere, B. and Wheeler M., https://doi.org/10.1016/S0898-1221(03)90086-1, 2003
     """
 
     def __init__(self, ratio_k: float) -> None:
@@ -525,16 +525,26 @@ def post_process(
 
 
 def adaptive_solver(
-    order_prime: int, order_eqlb: int, nref: int, doerfler: int, param_reviere: int
+    order_prime: int, order_eqlb: int, nref: int, doerfler: int, param_riviere: int
 ):
+    """Adaptive solution procedure
+
+    Args:
+        order_prime:   The order of the fe-space for the primal problem
+        order_eqlb:    The order of the RT space for the equilibration
+        nref:          The number of refinements
+        doerfler:      The Doerfler parameter
+        param_riviere: The kappa-ratio of the Riviere problem
+    """
+
     # The exact solution
-    uext = ExactSolution(param_reviere)
+    uext = ExactSolution(param_riviere)
 
     # The domain
     domain = AdaptiveSquare(2)
 
     # Storage of results
-    outname_base = "Reviere-{}_P{}_RT{}".format(param_reviere, order_prime, order_eqlb)
+    outname_base = "Riviere-{}_P{}_RT{}".format(param_riviere, order_prime, order_eqlb)
     results = np.zeros((nref, 7))
 
     for n in range(0, nref):

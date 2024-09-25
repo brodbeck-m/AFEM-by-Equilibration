@@ -464,7 +464,7 @@ def post_process(
 
 
 def adaptive_solver(order_prime: int, order_eqlb: int, nref: int, doerfler: int):
-    """Adaptive solution procedure for a L-shape problem
+    """Adaptive solution procedure
 
     Args:
         order_prime: The order of the fe-space for the primal problem
@@ -472,6 +472,7 @@ def adaptive_solver(order_prime: int, order_eqlb: int, nref: int, doerfler: int)
         nref:        The number of refinements
         doerfler:    The Doerfler parameter
     """
+
     # The domain
     domain = AdaptiveLShape(0.5)
 
