@@ -1,3 +1,6 @@
+# Copyright (C) 2024 Maximilian Brodbeck
+# SPDX-License-Identifier:    LGPL-3.0-or-later
+
 """Solution of linear elasticity with manufactured solution.
 
 Solves
