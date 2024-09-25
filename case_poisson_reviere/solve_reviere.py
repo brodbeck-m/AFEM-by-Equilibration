@@ -569,14 +569,18 @@ def adaptive_solver(
 if __name__ == "__main__":
 
     for kratio in [5, 100]:
+
+        # Set number of refinement levels
+        nref = 15 if (kratio == 5) else 40
+
         # Solve based on P1 with equilibration in RT1
-        adaptive_solver(1, 1, 15, 0.5, kratio)
+        adaptive_solver(1, 1, nref, 0.5, kratio)
 
         # Solve based on P1 with equilibration in RT2
-        adaptive_solver(1, 2, 15, 0.5, kratio)
+        adaptive_solver(1, 2, nref, 0.5, kratio)
 
         # Solve based on P2 with equilibration in RT2
-        adaptive_solver(2, 2, 15, 0.5, kratio)
+        adaptive_solver(2, 2, nref, 0.5, kratio)
 
         # Solve based on P2 with equilibration in RT3
-        adaptive_solver(2, 3, 15, 0.5, kratio)
+        adaptive_solver(2, 3, nref, 0.5, kratio)
