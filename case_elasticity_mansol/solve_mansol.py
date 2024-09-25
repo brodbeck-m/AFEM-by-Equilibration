@@ -595,11 +595,11 @@ if __name__ == "__main__":
         # Solve based on P2 with equilibration in RT2
         adaptive_solver(2, 2, 8, is_grntd)
 
-        # # Solve based on P2 with equilibration in RT3
-        # adaptive_solver(2, 3, 7, is_grntd)
+        # Solve based on P2 with equilibration in RT3
+        adaptive_solver(2, 3, 8, is_grntd)
 
-        # # Solve based on P3 with equilibration in RT3
-        # adaptive_solver(3, 3, 7, is_grntd)
+        # Solve based on P3 with equilibration in RT3
+        adaptive_solver(3, 3, 8, is_grntd)
 
-        # # Solve based on P3 with equilibration in RT4
-        # adaptive_solver(3, 4, 8, is_grntd)
+        # Solve based on P3 with equilibration in RT4
+        adaptive_solver(3, 4, 8, is_grntd)
