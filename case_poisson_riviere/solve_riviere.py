@@ -581,7 +581,7 @@ if __name__ == "__main__":
     for kratio in [5, 100]:
 
         # Set number of refinement levels
-        nref = 15 if (kratio == 5) else 40
+        nref = 20 if (kratio == 5) else 40
 
         # Solve based on P1 with equilibration in RT1
         adaptive_solver(1, 1, nref, 0.5, kratio)
