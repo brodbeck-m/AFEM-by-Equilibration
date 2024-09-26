@@ -66,8 +66,6 @@ If you are using using AFEM-by-Equilibration please cite
     journal = {}}
 ```
 
-
-
 # <a id="literature"></a> Literature
 <a id="1">[1]</a> Baratta, I. A. et al.: DOLFINx: The next generation FEniCS problem solving environment. preprint. (2023) doi: [10.5281/zenodo.10447666](https://doi.org/10.5281/zenodo.10447666)
 
