@@ -4,7 +4,7 @@
 
 Author: Maximilian Brodbeck
 
-This repository showcases how adaptive finite element solvers using equilibration based a posteriori error estimates can be build. Therefore, FEniCSx [[1]](#1) alongside with [dolfinx_eqlb](https://github.com/brodbeck-m/dolfinx_eqlb) [[2]](#2), an extension for efficient flux equilibration are used. Classical benchmarks for the Poisson problem (L-shaped domain [[1]](#1) and variants of the Kellogg problem [[3]](#3)[[4]](#4)) and linear elasticity (manufactured solution and Cooks membrane [[5]](#5)) are shown. The here presented code can be used to reproduce the results in the [related publication](???).
+This repository showcases how adaptive finite element solvers using equilibration based a posteriori error estimates can be build. Therefore, FEniCSx [[1]](#1) alongside with [dolfinx_eqlb](https://github.com/brodbeck-m/dolfinx_eqlb) [[2]](#2), an extension for efficient flux equilibration are used. Classical benchmarks for the Poisson problem and linear elasticity are shown. The here presented code can be used to reproduce the results in the [related publication](???).
 
 * [Features](#features)
 * [Getting started](#getting-started)
@@ -14,10 +14,10 @@ This repository showcases how adaptive finite element solvers using equilibratio
 
 # <a id="features"></a> Features
 AFEM-by-Equilibration contains adaptive finite element algorithms based on equilibrated fluxes for
-- the Poisson problem on an L-Shaped domain
-- the Poisson problem on a squared domain with discontinuous coefficients
+- the Poisson problem on an L-Shaped domain [[1]](#1)
+- the Poisson problem on a squared domain with discontinuous coefficients [[3]](#3)[[4]](#4)
 - linear elasticity on a unit-square with manufactured solution
-- linear elasticity on the Cooks membrane
+- linear elasticity on the Cooks membrane [[5]](#5)
 
 # <a id="getting-started"></a> Getting started
 The codes can be used based on a docker container. Therefore:
