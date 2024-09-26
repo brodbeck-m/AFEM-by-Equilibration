@@ -9,6 +9,9 @@ for dir in "$BASE_DIR"/*/; do
   if [ -d "$dir" ]; then
     # Change to the directory
     cd "$dir" || continue
+
+    # Remove all .csv in folder
+    rm -rf *.csv
     
     # Find all Python files in the directory
     for PYTHON_FILE in *.py; do
