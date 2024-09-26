@@ -1,5 +1,5 @@
 # <a name="AFEMbyEqlb"></a> Adaptive finite element methods based on flux equilibration using FEniCSx
-[![Project Status: Inactive – The project has reached a stable, usable state but is no longer being actively developed; support/maintenance will be provided as time allows.](https://www.repostatus.org/badges/latest/inactive.svg)](https://www.repostatus.org/#inactive) [![Identifier](https://img.shields.io/badge/doi-10.18419%2Fdarus--4479-d45815.svg)](https://doi.org/10.18419/darus-4479)
+[![Project Status: Inactive – The project has reached a stable, usable state but is no longer being actively developed; support/maintenance will be provided as time allows.](https://www.repostatus.org/badges/latest/inactive.svg)](https://www.repostatus.org/#inactive) [![Identifier](https://img.shields.io/badge/doi-10.18419%2Fdarus--4500-d45815.svg)](https://doi.org/10.18419/darus-4500)
 
 Author: Maximilian Brodbeck
 
