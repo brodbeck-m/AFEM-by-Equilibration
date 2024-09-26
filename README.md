@@ -1,25 +1,25 @@
 # 
-# <a name="section_base"></a> Adaptive finite element methods based on flux equilibration using FEniCSx
+# <a name="AFEMbyEqlb"></a> Adaptive finite element methods based on flux equilibration using FEniCSx
 [![Project Status: Inactive – The project has reached a stable, usable state but is no longer being actively developed; support/maintenance will be provided as time allows.](https://www.repostatus.org/badges/latest/inactive.svg)](https://www.repostatus.org/#inactive) [![Identifier](https://img.shields.io/badge/doi-10.18419%2Fdarus--4479-d45815.svg)](https://doi.org/10.18419/darus-4479)
 
 Author: Maximilian Brodbeck
 
 This repository showcases how adaptive finite element solvers using equilibration based a posteriori error estimates can be build. Therefore, FEniCSx [[1]](#1) alongside with [dolfinx_eqlb](https://github.com/brodbeck-m/dolfinx_eqlb) [[2]](#2), an extension for efficient flux equilibration are used. Classical benchmarks for the Poisson problem (L-shaped domain [[1]](#1) and variants of the Kellogg problem [[3]](#3)[[4]](#4)) and linear elasticity (manufactured solution and Cooks membrane [[5]](#5)) are shown. The here presented code can be used to reproduce the results in the [related publication](???).
 
-* [Features](#section_features)
-* [Getting started](#section_getting-started)
-* [How to cite](#section_how-to-cite)
-* [Literature](#section_literature)
-* [License](#section_license)
+* [Features](#features)
+* [Getting started](#getting-started)
+* [How to cite](#how-to-cite)
+* [Literature](#literature)
+* [License](#license)
 
-# <a id="section_features"></a> Features
+# <a id="features"></a> Features
 AFEM-by-Equilibration contains adaptive finite element algorithms based on equilibrated fluxes for
 - the Poisson problem on an L-Shaped domain
 - the Poisson problem on a squared domain with discontinuous coefficients
 - linear elasticity on a unit-square with manufactured solution
 - linear elasticity on the Cooks membrane
 
-# <a id="section_getting-started"></a> Getting started
+# <a id="getting-started"></a> Getting started
 The codes can be used based on a docker container. Therefore:
 
 1. Clone this repository using the command:
@@ -51,7 +51,7 @@ docker pull dolfinx/dolfinx:v0.6.0-r1
 
 Alternatively, a ready-to-use docker image is provided via [DaRUS](Add Link!).
 
-# <a id="section_how-to-cite"></a> How to cite
+# <a id="how-to-cite"></a> How to cite
 AFEM-by-Equilibration was cerated for research proposes. The code can be cited via [DaRUS](https://doi.org/10.18419/darus-4479).
 
 If you are using using AFEM-by-Equilibration please cite
@@ -69,7 +69,7 @@ If you are using using AFEM-by-Equilibration please cite
 
 
 
-# <a id="section_literature"></a> Literature
+# <a id="literature"></a> Literature
 <a id="1">[1]</a> Baratta, I. A. et al.: DOLFINx: The next generation FEniCS problem solving environment. preprint. (2023) doi: [10.5281/zenodo.10447666](https://doi.org/10.5281/zenodo.10447666)
 
 <a id="2">[2]</a> Brodbeck, M., Bertrand, F. and Ricken, T.: dolfinx_eqlb v1.2.0. DaRUS (2024) doi: [10.18419/darus-4498](https://doi.org/10.18419/darus-4498)
@@ -82,7 +82,7 @@ If you are using using AFEM-by-Equilibration please cite
 
 <a id="6">[6]</a> Strang, G. and Fix, G.: An Analysis of the Finite Element Methods. Wellesley-Cambridge Press, Philadelphia (2008) 
 
-# <a id="section_license"></a> License
+# <a id="license"></a> License
 AFEM-by-Equilibration is free software: you can redistribute it and/or modify it
 under the terms of the GNU Lesser General Public License as published
 by the Free Software Foundation, either version 3 of the License, or
