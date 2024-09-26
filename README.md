@@ -48,14 +48,14 @@ docker pull dolfinx/dolfinx:v0.6.0-r1
 ./execute_all.sh
 ```
 
-Alternatively, a ready-to-use docker image is provided via [DaRUS](Add Link!).
+Alternatively, a ready-to-use docker image is provided via [DaRUS](https://doi.org/10.18419/darus-4500).
 
 # <a id="how-to-cite"></a> How to cite
-AFEM-by-Equilibration was cerated for research proposes. The code can be cited via [DaRUS](https://doi.org/10.18419/darus-4479).
+AFEM-by-Equilibration was cerated for research proposes. The code can be cited via [DaRUS](https://doi.org/10.18419/darus-4500).
 
 If you are using using AFEM-by-Equilibration please cite
 
-**Adaptive finite element methods based on flux equilibration using FEniCSx**. preprint (2024). doi: [???](https://doi.org/10.18419/darus-4498)
+**Adaptive finite element methods based on flux equilibration using FEniCSx**. preprint (2024). doi: [???](???)
 ```bib
 @article{Brodbeck2024,
     doi = {???},
