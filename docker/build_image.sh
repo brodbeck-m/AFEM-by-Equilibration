@@ -9,7 +9,7 @@ then
     exit 1
 else
     # Build docker image
-    echo "DEQLB_HOME is set to '$AFEM_HOME'"
+    echo "AFEM_HOME is set to '$AFEM_HOME'"
     ${CONTAINER_ENGINE} pull dolfinx/dolfinx:v0.6.0-r1
     ${CONTAINER_ENGINE} build --no-cache -f "${AFEM_HOME}/docker/Dockerfile" -t brodbeck-m/afem-by-eqlb:release .
 fi

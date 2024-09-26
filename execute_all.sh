@@ -8,7 +8,7 @@ for dir in "$BASE_DIR"/*/; do
   # Check if it is a directory
   if [ -d "$dir" ]; then
     # Change to the directory
-    cd "$dir" || continue
+    pushd "$dir"
 
     # Remove all .csv in folder
     rm -rf *.csv
@@ -18,7 +18,7 @@ for dir in "$BASE_DIR"/*/; do
       # Check if the Python file exists
       if [ -f "$PYTHON_FILE" ]; then
         # Execute the Python file
-        python "$PYTHON_FILE"
+        python3 "$PYTHON_FILE"
       fi
     done
     
@@ -35,6 +35,6 @@ for dir in "$BASE_DIR"/*/; do
     mv *.xdmf *.h5 output_ParaView/ 2>/dev/null
     
     # Change back to the base directory
-    cd "$BASE_DIR" || exit
+    popd
   fi
 done
