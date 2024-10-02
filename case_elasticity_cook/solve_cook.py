@@ -405,8 +405,8 @@ def equilibrate(
     p_0: float,
     sigma_h: typing.Any,
     degree: int,
-    weak_symmetry: typing.Optional[bool] = True,
-    check_equilibration: typing.Optional[bool] = True,
+    weak_symmetry: typing.Optional[bool],
+    check_equilibration: typing.Optional[bool],
 ) -> typing.Tuple[typing.Any, fem.Function]:
     """Equilibrate the stress
 
@@ -441,7 +441,9 @@ def equilibrate(
     rhs_proj = [fem.Function(V_rhs_proj), fem.Function(V_rhs_proj)]
 
     # Initialise equilibrator
-    equilibrator = FluxEqlbSE(degree, domain.mesh, rhs_proj, sigma_proj, True, True)
+    equilibrator = FluxEqlbSE(
+        degree, domain.mesh, rhs_proj, sigma_proj, weak_symmetry, True
+    )
 
     # Set BCs
     fluxbcs = [[], []]
@@ -521,10 +523,11 @@ def equilibrate(
                 raise ValueError("Jump conditions not fulfilled")
 
         # Check weak symmetry condition
-        wsym_condition = check_weak_symmetry_condition(equilibrator.list_flux)
+        if weak_symmetry:
+            wsym_condition = check_weak_symmetry_condition(equilibrator.list_flux)
 
-        if not wsym_condition:
-            raise ValueError("Weak symmetry conditions not fulfilled")
+            if not wsym_condition:
+                raise ValueError("Weak symmetry conditions not fulfilled")
 
     return stress_eqlb, equilibrator.get_korn_constants()
 
@@ -539,7 +542,7 @@ def estimate(
 ) -> typing.Tuple[fem.Function, typing.List[float]]:
     """Estimates the error for elasticity
 
-    The estimate is calculated based on/following [1]. For the given problem the
+    The estimate is calculated following [1]. For the given problem the
     error due to data oscitation is zero.
 
     [1] Bertrand, F. et al., https://doi.org/10.1002/num.22741, 2021
