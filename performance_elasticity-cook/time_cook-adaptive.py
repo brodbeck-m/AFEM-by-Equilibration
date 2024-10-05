@@ -713,11 +713,13 @@ def time_problem(
 
     results[:, 6] = results[:, 2] + results[:, 3]
     results[:, 7] = results[:, 4] + results[:, 5]
-    results[:, 8] = results[:, 5] / results[:, 6]
-    results[:, 9] = results[:, 7] / results[:, 6]
+    results[:, 8] = results[:, 6] + results[:, 7]
+    results[:, 9] = results[:, 7] / results[:, 8]
 
     # Export results to csv
-    header_protocol = "nelmt, ndofs, tpassmbl, tpsolve, teproj, tesolve, tprime, teqlb, tesolvebytprime, teqlbbytprime"
+    header_protocol = (
+        "nelmt, ndofs, tpassmbl, tpsolve, teproj, tesolve, tprime, teqlb, ttot, ratio"
+    )
     np.savetxt(outname_base + ".csv", results, delimiter=",", header=header_protocol)
 
 
