@@ -55,15 +55,16 @@ AFEM-by-Equilibration was cerated for research proposes. The code can be cited v
 
 If you are using using AFEM-by-Equilibration please cite
 
-**Adaptive finite element methods based on flux equilibration using FEniCSx**. preprint (2024). doi: [???](???)
+**Adaptive finite element methods based on flux equilibration using FEniCSx**. preprint (2024). arXiv: [2410.09764](https://arxiv.org/abs/2410.09764)
 ```bib
-@article{Brodbeck2024,
-    doi = {???},
+@misc{Brodbeck2024,
+    title = {Adaptive finite element methods based on flux and stress equilibration using FEniCSx},
+    author={Maximilian Brodbeck, Fleurianne Bertrand and Tim Ricken},
     year = {2024},
-    publisher = {},
-    author = {M. Brodbeck, F. Bertrand and T. Ricken},
-    title = {Adaptive finite element methods based on flux equilibration using FEniCSx},
-    journal = {}}
+    eprint={2410.09764},
+    archivePrefix={arXiv},
+    url={https://arxiv.org/abs/2410.09764}
+}
 ```
 
 # <a id="literature"></a> Literature
