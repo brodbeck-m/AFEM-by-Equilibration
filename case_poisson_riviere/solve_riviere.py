@@ -307,7 +307,7 @@ def solve(
     domain: AdaptiveSquare,
     uext: ExactSolution,
     degree: int,
-) -> typing.Tuple[fem.Function, typing.Any]:
+) -> typing.Tuple[fem.Function, fem.Function]:
     """Solves the Poisson problem based on lagrangian finite elements
 
     Args:

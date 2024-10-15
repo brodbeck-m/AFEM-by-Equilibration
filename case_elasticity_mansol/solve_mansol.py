@@ -156,9 +156,9 @@ def solve(
                      is projected
     Returns:
         The right-hand-side,
-        The exact stress tensor,
+        The exact stress tensor (ufl tensor),
         The approximated solution,
-        The approximated stress tensor
+        The approximated stress tensor (ufl tensor)
     """
 
     # The exact solution
@@ -223,11 +223,6 @@ def solve(
     pc = solver.getPC()
     pc.setType(PETSc.PC.Type.LU)
     pc.setFactorSolverType("mumps")
-
-    # solver.setType(PETSc.KSP.Type.CG)
-    # pc = solver.getPC()
-    # pc.setType(PETSc.PC.Type.HYPRE)
-    # pc.setHYPREType("boomeramg")
 
     # Solve the system
     solver.setTolerances(rtol=1e-12, atol=1e-12, max_it=1000)

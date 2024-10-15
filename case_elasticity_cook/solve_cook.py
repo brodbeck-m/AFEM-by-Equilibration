@@ -333,7 +333,9 @@ def solve(
         degree:      The degree of the FE space
 
     Returns:
-        The approximate solution
+        The approximate solution,
+        The number of degrees of freedom,
+        The approximated stress (ufl argument)
     """
 
     # Initialise timing
