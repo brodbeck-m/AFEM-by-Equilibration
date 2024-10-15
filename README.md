@@ -3,7 +3,7 @@
 
 Author: Maximilian Brodbeck
 
-This repository showcases how adaptive finite element solvers using equilibration based a posteriori error estimates can be build. Therefore, FEniCSx [[1]](#1) alongside with [dolfinx_eqlb](https://github.com/brodbeck-m/dolfinx_eqlb) [[2]](#2), an extension for efficient flux equilibration are used. Classical benchmarks for the Poisson problem and linear elasticity are shown. The here presented code can be used to reproduce the results in the [related publication](???).
+This repository showcases how adaptive finite element solvers using equilibration based a posteriori error estimates can be build. Therefore, FEniCSx [[1]](#1) alongside with [dolfinx_eqlb](https://github.com/brodbeck-m/dolfinx_eqlb) [[2]](#2), an extension for efficient flux equilibration are used. Classical benchmarks for the Poisson problem and linear elasticity are shown. The here presented code can be used to reproduce the results in the [related publication](https://arxiv.org/abs/2410.09764).
 
 * [Features](#features)
 * [Getting started](#getting-started)
