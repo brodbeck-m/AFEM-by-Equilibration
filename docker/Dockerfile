@@ -22,9 +22,8 @@ RUN sed -i 's%<Eigen/Core>%<eigen3/Eigen/Core>%' ${PYBIND_EIGEN_PATH} && \
 RUN pip3 install matplotlib numexpr sympy
 
 # --- Install dolfinx_eqlb ---
-RUN git clone https://github.com/brodbeck-m/dolfinx_eqlb.git &&\
+RUN git clone --depth 1 --branch v1.2.0 https://github.com/brodbeck-m/dolfinx_eqlb &&\
     cd /root/dolfinx_eqlb &&\
     cmake -G Ninja -B build-dir -DCMAKE_BUILD_TYPE=Release cpp/ &&\
     ninja -C build-dir install &&\
     pip3 install python/ -v --upgrade
-
